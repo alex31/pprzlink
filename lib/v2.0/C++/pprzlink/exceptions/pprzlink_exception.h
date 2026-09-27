@@ -17,12 +17,6 @@
  *
  */
 
-/** \file pprzlink_exception.h
- *
- *
- */
-
-
 #ifndef PPRZLINKCPP_PPRZLINK_EXCEPTION_H
 #define PPRZLINKCPP_PPRZLINK_EXCEPTION_H
 
@@ -52,4 +46,4 @@ namespace pprzlink {
   DECLARE_PPRZLINK_EXCEPT(message_is_not_request)
   DECLARE_PPRZLINK_EXCEPT(wrong_answer_to_request)
 }
-#endif //PPRZLINKCPP_PPRZLINK_EXCEPTION_H
+#endif // PPRZLINKCPP_PPRZLINK_EXCEPTION_H

@@ -17,188 +17,102 @@
  *
  */
 
-/** \file Message.h
- *
- *
- */
-
 #ifndef PPRZLINKCPP_MESSAGE_H
 #define PPRZLINKCPP_MESSAGE_H
 
-#include <map>
-#include <cassert>
+#include <pprzlink/FieldValue.h>
 #include <pprzlink/MessageDefinition.h>
 #include <pprzlink/exceptions/pprzlink_exception.h>
-#include <pprzlink/FieldValue.h>
+#include <map>
 #include <variant>
 
 namespace pprzlink {
-  /**
-   *
-   */
+  /// A copy of a message definition, its populated FieldValues and sender/receiver IDs.
+  /// Create from a dictionary definition, populate fields, then send through a link/transport.
   class Message {
   public:
-  
+    using SenderId = std::variant<std::string, uint8_t>;
+
     explicit Message();
-    
-    /**
-     *
-     * @param def
-     */
     explicit Message(const MessageDefinition &def);
 
-    /**
-     *
-     * @tparam ValueType
-     * @param name
-     * @param value
-     */
-    template<typename ValueType>
+    /// Validate and convert before inserting/replacing a field; no default value is created.
+    template<class ValueType>
     void addField(const std::string &name, ValueType value)
     {
-      auto field = def.getField(name); // Will throw no_such_field if non existing field name
-      fieldValues[name] = FieldValue(field,value);
+      const auto &field = def.getField(name);
+      fieldValues.insert_or_assign(name, FieldValue(field, value));
     }
 
-    /**
-     *
-     * @tparam ValueType
-     * @param name
-     * @param value
-     */
-    template<typename ValueType>
+    /// Exact-type reads. Missing definitions/values retain their distinct exceptions.
+    template<class ValueType>
     void getField(const std::string &name, ValueType &value) const
     {
-      auto field = def.getField(name); // Will throw no_such_field if non existing field name
-      auto const &it = fieldValues.find(name);
-      if (it == fieldValues.end())
-      {
-        throw field_has_no_value("In message " + def.getName() + " field " + name + " has not value !");
-      }
-      it->second.getValue(value);
+      fieldWithValue(name).getValue(value);
     }
 
-    /**
-     *
-     * @tparam ValueType
-     * @param index
-     * @param value
-     */
-    template<typename ValueType>
+    template<class ValueType>
     void getField(size_t index, ValueType &value) const
     {
-      auto name = def.getField(index).getName();
-      auto const &it = fieldValues.find(name);
-      if (it == fieldValues.end())
-      {
-        throw field_has_no_value("In message " + def.getName() + " field " + name + " has not value !");
-      }
-      it->second.getValue(value);
+      getField(def.getField(index).getName(), value);
     }
 
-    /**
-     *
-     * @param index
-     * @param buffer
-     * @param offset
-     */
-    void addFieldFromBuffer(size_t index, BytesBuffer const &buffer, size_t & offset);
+    /// Return a scalar, string or container instead of taking an output parameter.
+    template<class ValueType>
+    [[nodiscard]] ValueType getField(const std::string &name) const
+    {
+      return fieldWithValue(name).getValue<ValueType>();
+    }
 
-    /**
-     *
-     * @param index
-     * @param buffer
-     * @return
-     */
+    template<class ValueType>
+    [[nodiscard]] ValueType getField(size_t index) const
+    {
+      return getField<ValueType>(def.getField(index).getName());
+    }
+
+    /// Read the XML-selected variant without copying. Do not retain the reference
+    /// beyond destruction/assignment of this message or replacement of this field.
+    [[nodiscard]] const FieldValue::Storage &getField(const std::string &name) const
+    {
+      return fieldWithValue(name).getValue();
+    }
+
+    [[nodiscard]] const FieldValue::Storage &getField(size_t index) const
+    {
+      return getField(def.getField(index).getName());
+    }
+
+    /// Binary codec wrappers; offset advances only after a complete field is stored.
+    void addFieldFromBuffer(size_t index, const BytesBuffer &buffer, size_t &offset);
+    void addFieldFromBuffer(size_t index, std::span<const uint8_t> buffer, size_t &offset);
     size_t addFieldToBuffer(size_t index, BytesBuffer &buffer) const;
 
-    /**
-     *
-     * @param index
-     * @return
-     */
-    [[nodiscard]] const FieldValue& getRawValue(int index) const;
-
-    /**
-     *
-     * @param name
-     * @return
-     */
-    [[nodiscard]] const FieldValue& getRawValue(const std::string& name) const;
-
-    /**
-     *
-     * @return
-     */
+    /// Same missing-field/value exceptions as getField; references belong to this message.
+    [[nodiscard]] const FieldValue &getRawValue(size_t index) const;
+    [[nodiscard]] const FieldValue &getRawValue(const std::string &name) const;
     [[nodiscard]] size_t getNbValues() const;
-
-    /**
-     *
-     * @return
-     */
     [[nodiscard]] const MessageDefinition &getDefinition() const;
-
-    /**
-     *
-     * @return
-     */
     [[nodiscard]] std::string toString() const;
 
-    /**
-     *
-     * @return
-     */
-    const std::variant<std::string, uint8_t> &getSenderId() const;
-
-    /**
-     *
-     * @return
-     */
+    const SenderId &getSenderId() const;
     uint8_t getReceiverId() const;
-
-    /**
-     *
-     * @return
-     */
     uint8_t getComponentId() const;
-
-    /**
-     *
-     * @return
-     */
     uint8_t getClassId() const;
-
-    /**
-     *
-     * @param senderId
-     */
-    void setSenderId(const std::variant<std::string, uint8_t> &senderId);
-
-    /**
-     *
-     * @param receiverId
-     */
+    void setSenderId(const SenderId &senderId);
     void setReceiverId(uint8_t receiverId);
-
-    /**
-     *
-     * @param componentId
-     */
     void setComponentId(uint8_t componentId);
 
-    /**
-     *
-     * @return  the size of the message in bytes if stored in binary
-     */
+    /// Binary payload size; all fields must have values.
     size_t getByteSize() const;
 
   private:
+    const FieldValue &fieldWithValue(const std::string &name) const;
+
     MessageDefinition def;
     std::map<std::string, FieldValue> fieldValues;
-    std::variant<std::string,uint8_t> sender_id;
-    uint8_t receiver_id;
-    uint8_t component_id;
+    SenderId sender_id = uint8_t{0};
+    uint8_t receiver_id = 0;
+    uint8_t component_id = 0;
   };
-
 }
-#endif //PPRZLINKCPP_MESSAGE_H
+#endif // PPRZLINKCPP_MESSAGE_H

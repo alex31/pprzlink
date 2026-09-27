@@ -17,26 +17,23 @@
  *
  */
 
-/** \file MessageDefinition.h
- *
- *
- */
-
 #ifndef PPRZLINKCPP_MESSAGEDEFINITION_H
 #define PPRZLINKCPP_MESSAGEDEFINITION_H
 
-#include <vector>
 #include <pprzlink/MessageField.h>
 #include <tinyxml2.h>
 #include <map>
+#include <vector>
 
 namespace pprzlink {
 
+  /// A message schema: class/message IDs, name and ordered field definitions.
+  /// It contains no transmitted values; Message populates a copy of this schema.
   class MessageDefinition {
   public:
-    MessageDefinition ();
+    MessageDefinition();
 
-    explicit MessageDefinition (tinyxml2::XMLElement* xml,int classId);
+    explicit MessageDefinition(const tinyxml2::XMLElement *xml, int classId);
 
     [[nodiscard]] uint8_t getClassId() const;
 
@@ -46,14 +43,16 @@ namespace pprzlink {
 
     [[nodiscard]] size_t getNbFields() const;
 
-    [[nodiscard]] const MessageField& getField(int index) const;
+    /// Unknown names and out-of-range indices throw no_such_field.
+    [[nodiscard]] const MessageField &getField(size_t index) const;
 
-    [[nodiscard]] const MessageField& getField(const std::string &name) const;
+    [[nodiscard]] const MessageField &getField(const std::string &name) const;
 
     [[nodiscard]] bool hasFieldName(const std::string &name) const;
 
     [[nodiscard]] std::string toString() const;
 
+    /// Sum of fixed field data sizes, excluding variable-length count prefixes.
     [[nodiscard]] size_t getMinimumSize() const;
 
     [[nodiscard]] bool isRequest() const;
@@ -63,7 +62,7 @@ namespace pprzlink {
     uint8_t id;
     std::string name;
     std::vector<MessageField> fields;
-    std::map<std::string,size_t> fieldNameToIndex;
+    std::map<std::string, size_t> fieldNameToIndex;
   };
 }
-#endif //PPRZLINKCPP_MESSAGEDEFINITION_H
+#endif // PPRZLINKCPP_MESSAGEDEFINITION_H

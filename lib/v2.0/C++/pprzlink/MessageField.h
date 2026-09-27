@@ -17,11 +17,6 @@
  *
  */
 
-/** \file MessageField.h
- *
- *
- */
-
 #ifndef PPRZLINKCPP_MESSAGEFIELD_H
 #define PPRZLINKCPP_MESSAGEFIELD_H
 
@@ -30,6 +25,7 @@
 
 namespace pprzlink {
 
+  /// A field definition: its name and XML type. FieldValue holds an actual value.
   class MessageField {
   public:
     MessageField(const std::string &name, const FieldType &type);
@@ -40,6 +36,7 @@ namespace pprzlink {
 
     [[nodiscard]] const FieldType &getType() const;
 
+    /// Fixed data size; zero for strings/dynamic arrays. Excludes count prefixes.
     [[nodiscard]] size_t getSize() const;
   private:
     std::string name;
@@ -48,4 +45,4 @@ namespace pprzlink {
   };
 }
 
-#endif //PPRZLINKCPP_MESSAGEFIELD_H
+#endif // PPRZLINKCPP_MESSAGEFIELD_H

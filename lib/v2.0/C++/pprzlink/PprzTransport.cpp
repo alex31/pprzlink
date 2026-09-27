@@ -17,177 +17,120 @@
  *
  */
 
-/** \file PprzTransport.cpp
- *
- *
- */
-
-
-#include <iostream>
-#include <memory>
-#include <iomanip>
 #include "PprzTransport.h"
+#include "detail/MessagePayload.h"
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <span>
+#include <utility>
 
 namespace pprzlink {
+  namespace {
+    constexpr uint8_t startByte = PPRZ_STX;
+    constexpr size_t headerSize = 6;
+    constexpr size_t checksumSize = 2;
+    constexpr size_t minimumFrameSize = headerSize + checksumSize;
+    constexpr size_t maximumFrameSize = std::numeric_limits<uint8_t>::max();
 
-  PprzTransport::PprzTransport(Device *device, const MessageDictionary &dictionary) : Transport(device, dictionary), transportBuffer(), currentMessage(nullptr)
+    std::array<uint8_t, checksumSize> checksum(std::span<const uint8_t> bytes)
+    {
+      uint8_t a = 0, b = 0;
+      for (const auto byte : bytes) {
+        a += byte;
+        b += a;
+      }
+      return {a, b};
+    }
+
+    enum class FrameStatus { Incomplete, Invalid, Complete };
+
+    // The span starts at STX. Inspect lengths before accessing header/checksum bytes.
+    FrameStatus inspectFrame(std::span<const uint8_t> bytes)
+    {
+      if (bytes.size() < 2) return FrameStatus::Incomplete;
+      const size_t length = bytes[1];
+      if (length < minimumFrameSize) return FrameStatus::Invalid;
+      if (bytes.size() < length) return FrameStatus::Incomplete;
+      const auto expected = checksum(bytes.subspan(1, length - checksumSize - 1));
+      if (bytes[length - 2] != expected[0] || bytes[length - 1] != expected[1]) {
+        return FrameStatus::Invalid;
+      }
+      return FrameStatus::Complete;
+    }
+
+  }
+
+  PprzTransport::PprzTransport(std::unique_ptr<Device> device, const MessageDictionary &dictionary)
+    : Transport(std::move(device), dictionary)
   {
-    transportBuffer.reserve(256); // This is enough for all pprz message (up to version 2.0) and should avoid mallocs
+    transportBuffer.reserve(maximumFrameSize);
   }
 
   bool PprzTransport::hasMessage()
   {
-    if (!currentMessage)
-      decodeMessage();
-    return (bool)currentMessage;
+    if (!currentMessage) decodeMessage();
+    return static_cast<bool>(currentMessage);
   }
 
   std::unique_ptr<Message> PprzTransport::getMessage()
   {
-    if (!currentMessage)
-      decodeMessage();
-
+    if (!currentMessage) decodeMessage();
     return std::move(currentMessage);
   }
 
-  size_t PprzTransport::sendMessage(Message const &msg)
+  size_t PprzTransport::sendMessage(const Message &msg)
   {
-    BytesBuffer buffer;
-    buffer.push_back(PPRZ_STX);
-    buffer.push_back(msg.getDefinition().getMinimumSize()); // Length to be computed at the end
-    if (msg.getSenderId().index()==0)
-    {
-      uint8_t ac_id;
-      std::stringstream sstr(std::get<std::string>(msg.getSenderId()));
-      sstr >> ac_id;
-      buffer.push_back(ac_id);
-    }
-    else
-    {
-      buffer.push_back(std::get<uint8_t>(msg.getSenderId()));
-    }
-    buffer.push_back(msg.getReceiverId());
-    uint8_t class_component_id = (msg.getClassId() & 0x0Fu) | ((msg.getComponentId() & 0x0Fu)<<4u);
-    buffer.push_back(class_component_id);
-
-    buffer.push_back(msg.getDefinition().getId());
-
-    size_t fieldSize=0;
-    // Add each field to the buffer
-    for (size_t fieldIndex=0; fieldIndex < msg.getDefinition().getNbFields(); ++fieldIndex)
-    {
-      fieldSize+= msg.addFieldToBuffer(fieldIndex, buffer);
-    }
-    buffer[1]=8+fieldSize; // 6 header bytes + 2 checksum bytes + fieldSize
-
-    uint8_t chk_A=0;
-    uint8_t chk_B=0;
-
-    for (size_t i=1; i<buffer.size();++i)
-    {
-      chk_A+=buffer[i];
-      chk_B+=chk_A;
-    }
-    buffer.push_back(chk_A);
-    buffer.push_back(chk_B);
+    constexpr size_t envelopeSize = 4; // STX, length and two checksum bytes.
+    const auto payload = detail::encodeMessagePayload(msg, maximumFrameSize - envelopeSize);
+    const auto length = static_cast<uint8_t>(envelopeSize + payload.size());
+    BytesBuffer buffer{startByte, length};
+    buffer.reserve(length);
+    buffer.insert(buffer.end(), payload.begin(), payload.end());
+    const auto check = checksum(std::span(buffer).subspan(1));
+    buffer.insert(buffer.end(), check.begin(), check.end());
     device->writeBuffer(buffer);
-
     return buffer.size();
   }
 
   bool PprzTransport::decodeMessage()
   {
-    // Read all available bytes from device
-    auto newBytes = device->readAll();
-    transportBuffer.insert(transportBuffer.end(),newBytes.begin(),newBytes.end());
+    const auto received = device->readAll();
+    transportBuffer.insert(transportBuffer.end(), received.begin(), received.end());
+    size_t cursor = 0;
+    const auto discardThrough = [&](size_t end) {
+      transportBuffer.erase(transportBuffer.begin(), transportBuffer.begin() + end);
+    };
 
-    // Look for PPRZ_STX at begining of message and discard anything that comes before
-    while (transportBuffer.size()>0 && transportBuffer[0]!=PPRZ_STX)
-    {
-      transportBuffer.erase(transportBuffer.begin());
-    }
-
-    // Do we have the length of the message ?
-    if (transportBuffer.size() > 2)
-    {
-      const uint8_t length = transportBuffer[1];
-      // Do we have enough data for this message ?
-      if (transportBuffer.size() >= length)
-      {
-        const uint8_t source = transportBuffer[2];
-        const uint8_t destination = transportBuffer[3];
-        const uint8_t class_component = transportBuffer[4] ;
-        const uint8_t class_id = (class_component & 0x0Fu);
-        const uint8_t component_id = (class_component & 0xF0u) >> 4u;
-        const uint8_t message_id = transportBuffer[5];
-        const uint8_t checksum_A = transportBuffer[length-2];
-        const uint8_t checksum_B = transportBuffer[length-1];
-
-        uint8_t chk_A=0;
-        uint8_t chk_B=0;
-        for (int i=1; i< length-2; ++i)
-        {
-          chk_A+=transportBuffer[i];
-          chk_B+=chk_A;
-        }
-
-        if (chk_A!=checksum_A || chk_B!=checksum_B)
-        {
-          std::cerr << "Wrong checksum in message !\n";
-          std::cerr << (int)chk_A << " !=" << (int)checksum_A << "\n";
-          std::cerr << (int)chk_B << " != " << (int)checksum_B << "\n";
-          // Remove STX so as to prevent reread on this message
-          transportBuffer.erase(transportBuffer.begin());
-          // Try again with the rest of the buffer
-          return decodeMessage();
-        }
-
-        /*
-        std::cout << "Message : \n ";
-        std::cout << "\tsource " << (int)source << "\n";
-        std::cout << "\tdestination " << (int)destination << "\n";
-        std::cout << "\tclass " << (int)class_id << "\n";
-        std::cout << "\tcomponent " << (int)component_id << "\n";
-        std::cout << "\tmessage " << (int)message_id << "\n";
-        std::cout << "\tpayload length " << (int)length-8 << "\n";
-        std::cout << "\tminimum size " << dictionary.getDefinition(class_id,message_id).getMinimumSize() << "\n";
-        std::cout << "\t\t=> " << dictionary.getDefinition(class_id,message_id).getName() << std::endl;
-        */
-        currentMessage = std::make_unique<Message>(dictionary.getDefinition(class_id,message_id));
-        size_t offset=6; // Skip the header
-
-        currentMessage->setSenderId(source);
-        currentMessage->setReceiverId(destination);
-        currentMessage->setComponentId(component_id);
-
-        for (size_t fieldIndex=0; fieldIndex < currentMessage->getDefinition().getNbFields(); ++fieldIndex)
-        {
-          currentMessage->addFieldFromBuffer(fieldIndex,transportBuffer,offset);
-        }
-        transportBuffer.erase(transportBuffer.begin(),transportBuffer.begin()+length);
-        return true;
+    while (cursor < transportBuffer.size()) {
+      const auto start = std::find(transportBuffer.begin() + cursor, transportBuffer.end(), startByte);
+      cursor = static_cast<size_t>(start - transportBuffer.begin());
+      const auto remaining = std::span<const uint8_t>(transportBuffer).subspan(cursor);
+      switch (inspectFrame(remaining)) {
+        case FrameStatus::Incomplete:
+          discardThrough(cursor); // Keep only the unfinished frame.
+          return false;
+        case FrameStatus::Invalid:
+          ++cursor; // Search again without recursion or repeated buffer copies.
+          continue;
+        case FrameStatus::Complete:
+          break;
       }
-    }
 
+      const size_t length = remaining[1];
+      // Consume a checksum-valid frame even if its definition/payload is invalid.
+      // A subsequent call can then decode the next frame without exposing a partial message.
+      try {
+        currentMessage = std::make_unique<Message>(
+            detail::decodeMessagePayload(dictionary, remaining.subspan(2, length - 4)));
+      } catch (...) {
+        discardThrough(cursor + length);
+        throw;
+      }
+      discardThrough(cursor + length);
+      return true;
+    }
+    discardThrough(cursor);
     return false;
   }
-
 }
-
-/*
- PPRZ-message: ABCxxxxxxxDE
-    A PPRZ_STX (0x99)
-    B LENGTH (A->E)
-    C PPRZ_DATA
-      0 SOURCE (~sender_ID)
-      1 DESTINATION (can be a broadcast ID)
-      2 CLASS/COMPONENT
-        bits 0-3: 16 class ID available
-        bits 4-7: 16 component ID available
-      3 MSG_ID
-      4 MSG_PAYLOAD
-      . DATA (messages.xml)
-    D PPRZ_CHECKSUM_A (sum[B->C])
-    E PPRZ_CHECKSUM_B (sum[ck_a])
- */
-

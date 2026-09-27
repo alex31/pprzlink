@@ -17,346 +17,209 @@
  *
  */
 
-/** \file FieldValue.h
- *
- *
- */
-
-
 #ifndef PPRZLINKCPP_FIELDVALUE_H
 #define PPRZLINKCPP_FIELDVALUE_H
 
 #include <pprzlink/MessageField.h>
-#include <any>
-#include <vector>
+#include <pprzlink/Device.h>
+#include <algorithm>
 #include <array>
-#include <stdexcept>
+#include <concepts>
+#include <format>
+#include <ranges>
+#include <span>
 #include <sstream>
-#include <cstdint>
-#include "Device.h"
+#include <stdexcept>
+#include <string>
+#include <variant>
+#include <vector>
 
 namespace pprzlink {
-  /**
-   * TODO
-   */
-  class FieldValue {
-  public:
-    /**
-     * Default constructor of FieldValue.
-     * The constructed FieldValue is not usable (used only for adding easily in containers)
-     */
-    FieldValue() : field("","char") {}
+  template<class T>
+  concept Arithmetic = std::integral<T> || std::floating_point<T>;
 
-    /**
-     * TODO
-     * @tparam T
-     * @param field
-     * @param array
-     * @param size
-     */
-    template<
-      typename T,
-      typename = typename std::enable_if<std::is_arithmetic<T>::value>::type
-    >
-    FieldValue(const MessageField &field, const T *array, size_t size) : field(field)
-    {
-      const auto &type = field.getType();
-      if (type.isArray())
-      {
-        if (type.getArraySize() && type.getArraySize() != size)
-        {
-          std::stringstream sstr;
-          sstr << "Wrong size in building value for " << field.getName() << ", got " << size << " / expected "
-               << type.getArraySize();
-          throw std::logic_error(sstr.str());
-        }
-        std::vector <std::any> vec;
-        vec.resize(size);
-        for (size_t i = 0; i < size; ++i)
-        {
-          vec[i] = MakeStdAny(field, array[i]);
-        }
-        value = std::any(vec);
-      }
-      else
-      {
-        throw std::logic_error("Cannot build scalar field from an array");
-      }
-    }
-
-    /** Builds a FieldValue from a string.
-     * This will build either a string type or a char array type.
-     * No parsing is done for other types.
-     *
-     * @tparam T this will resolve to std::string
-     * @param field The MessageField for which the value is built
-     * @param str The string to build the value from
-     */
-    template<
-      typename T,
-      typename = typename std::enable_if<std::is_same<std::string, T>::value>::type
-    >
-    FieldValue(const MessageField &field, const T &str) : field(field)
-    {
-      const auto &type = field.getType();
-      const auto &name = field.getName();
-      if (type.getBaseType() != BaseType::STRING && !(type.isArray() && type.getBaseType() == BaseType::CHAR))
-      {
-        throw std::logic_error("Cannot build field " + name + " of type " + type.toString() + " from string value.");
-      }
-      if (type.getBaseType() == BaseType::STRING)
-      {
-        value = std::any(std::string(str));
-      }
-      else
-      {
-        // If it is a char array, treat this as any other array
-        std::vector<std::any> v;
-        if (type.getArraySize() && type.getArraySize() != str.size())
-        {
-          std::stringstream sstr;
-          sstr << "Wrong size in building value for " << field.getName() << ", got " << str.size() << " / expected "
-               << type.getArraySize();
-          throw std::logic_error(sstr.str());
-        }
-        v.reserve(str.size());
-        for (auto val: str)
-        {
-          v.push_back(MakeStdAny(field, val));
-        }
-        value = std::any(v);
-      }
-    }
-
-
-    /**
-     * TODO
-     * @tparam T
-     * @param field
-     * @param s
-     */
-    template<
-      typename T,
-      typename = typename std::enable_if<std::is_same<char, T>::value>::type
-    >
-    FieldValue(const MessageField &field, const T *s) : FieldValue(field, std::string(s))
-    {
-    }
-
-    /**
-     * TODO
-     * @tparam Container
-     * @tparam T
-     * @param field
-     * @param c
-     */
-    template<
-      typename Container,
-      typename T = typename Container::value_type,
-      typename = typename std::enable_if<
-        !std::is_arithmetic<Container>::value && !std::is_same<std::string, Container>::value>::type
-    >
-    FieldValue(const MessageField &field, const Container &c) : field(field)
-    {
-      std::vector <std::any> v;
-      const auto &type = field.getType();
-      if (type.getArraySize() && type.getArraySize() != c.size())
-      {
-        std::stringstream sstr;
-        sstr << "Wrong size in building value for " << field.getName() << ", got " << c.size() << " / expected "
-             << type.getArraySize();
-        throw std::logic_error(sstr.str());
-      }
-      v.reserve(c.size());
-      for (auto val: c)
-      {
-        v.push_back(MakeStdAny(field, val));
-      }
-      value = std::any(v);
+  /// Array input: an iterable container with a value type and a size.
+  /// std::string has its own overload to distinguish text from array elements.
+  template<class Container>
+  concept FieldValueContainer =
+    !std::same_as<Container, std::string> &&
+    std::ranges::input_range<const Container> &&
+    requires(const Container &container) {
+      typename Container::value_type;
+      { container.size() } -> std::convertible_to<size_t>;
     };
 
-    /**
-     * TODO
-     * @tparam T
-     * @param field
-     * @param v
-     */
-    template<
-      typename T,
-      typename = typename std::enable_if<std::is_arithmetic<T>::value>::type
-    >
-    FieldValue(const MessageField &field, T v) : field(field)
-    {
-      value = MakeStdAny(field, v);
-    }
+  /// Array output only needs clear/push_back; std::array has a separate overload.
+  template<class Container>
+  concept FieldValueOutputContainer = !std::same_as<Container, std::string> &&
+    requires(Container &container, typename Container::value_type element) {
+      container.clear();
+      container.push_back(element);
+    };
 
-    /**
-     * TODO
-     * @tparam T
-     * @tparam Size
-     * @param c
-     */
-    template<
-      typename T,
-      size_t Size>
-    void getValue(std::array <T, Size> &c) const
+  namespace detail {
+    // Keep the receiver dependent until FieldValue is completely defined.
+    template<class Field, class Output>
+    concept ReadableFieldValue = std::default_initializable<Output> &&
+      requires(const Field &field, Output &output) { field.getValue(output); };
+
+    /// Translate the XML base type into a C++ type in one place.
+    template<class Visitor>
+    decltype(auto) visitBaseType(BaseType type, Visitor &&visitor)
     {
-      auto vec = std::any_cast < std::vector < std::any >> (value);
-      for (size_t i = 0; i < c.size(); ++i)
-      {
-        c[i] = std::any_cast<T>(vec[i]);
+      switch (type) {
+        case BaseType::CHAR: return visitor.template operator()<char>();
+        case BaseType::INT8: return visitor.template operator()<int8_t>();
+        case BaseType::INT16: return visitor.template operator()<int16_t>();
+        case BaseType::INT32: return visitor.template operator()<int32_t>();
+        case BaseType::UINT8: return visitor.template operator()<uint8_t>();
+        case BaseType::UINT16: return visitor.template operator()<uint16_t>();
+        case BaseType::UINT32: return visitor.template operator()<uint32_t>();
+        case BaseType::FLOAT: return visitor.template operator()<float>();
+        case BaseType::DOUBLE: return visitor.template operator()<double>();
+        case BaseType::STRING: return visitor.template operator()<std::string>();
+        case BaseType::NOT_A_TYPE: break;
       }
+      throw std::logic_error("Invalid field base type");
+    }
+  }
+
+  /// A field definition and its actual value. The variant type follows the XML type.
+  class FieldValue {
+  public:
+    using Storage = std::variant<
+      char, int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, float, double, std::string,
+      std::vector<char>, std::vector<int8_t>, std::vector<int16_t>, std::vector<int32_t>,
+      std::vector<uint8_t>, std::vector<uint16_t>, std::vector<uint32_t>,
+      std::vector<float>, std::vector<double>, std::vector<std::string>>;
+
+    // A field cannot exist without both its definition and a value.
+    FieldValue() = delete;
+
+    /// Convert an arithmetic scalar to the type declared by the field.
+    template<Arithmetic T>
+    FieldValue(const MessageField &field, T input) : field(field), value(makeScalar(field, input)) {}
+
+    /// Build a string or a char array; text is never parsed as a number.
+    template<std::same_as<std::string> T>
+    FieldValue(const MessageField &field, const T &text) : field(field), value(makeText(field, text)) {}
+
+    template<std::same_as<char> T>
+    FieldValue(const MessageField &field, const T *text) : FieldValue(field, std::string(text)) {}
+
+    /// Convert array elements and check the fixed size, when specified in XML.
+    template<FieldValueContainer Container>
+    FieldValue(const MessageField &field, const Container &input)
+      : field(field), value(makeArray(field, input)) {}
+
+    template<Arithmetic T>
+    FieldValue(const MessageField &field, const T *input, size_t size)
+      : FieldValue(field, std::span<const T>(input, size)) {}
+
+    /// Read the exact stored type. A mismatch throws std::bad_variant_access.
+    template<Arithmetic T>
+    void getValue(T &output) const { output = stored<T>(); }
+
+    template<std::same_as<std::string> T>
+    void getValue(T &output) const { output = stored<T>(); }
+
+    template<FieldValueOutputContainer Container>
+    void getValue(Container &output) const
+    {
+      const auto &elements = stored<std::vector<typename Container::value_type>>();
+      output.clear();
+      for (const auto &element : elements) output.push_back(element);
     }
 
-    /**
-     * TODO
-     * @tparam Container
-     * @tparam T
-     * @param c
-     */
-    template<
-      typename Container,
-      typename T = typename Container::value_type,
-      typename = typename std::enable_if<
-        !std::is_arithmetic<Container>::value && !std::is_same<std::string, Container>::value>::type
-    >
-    void getValue(Container &c) const
+    /// A fixed output array must have exactly the stored number of elements.
+    template<class T, size_t Size>
+    void getValue(std::array<T, Size> &output) const
     {
-      c.clear();
-      auto vec = std::any_cast < std::vector < std::any >> (value);
-      for (auto val: vec)
-      {
-        c.push_back(std::any_cast<T>(val));
+      const auto &elements = stored<std::vector<T>>();
+      if (elements.size() != Size) {
+        throw std::length_error(std::format("Field {} has {} elements, requested {}",
+                                           getName(), elements.size(), Size));
       }
+      std::ranges::copy(elements, output.begin());
     }
 
-    /**
-     * TODO
-     * @tparam T
-     * @tparam E
-     * @param val
-     */
-    template<
-      typename T,
-      typename E = typename std::enable_if<std::is_arithmetic<T>::value>::type
-    >
-    void getValue(T &val) const
+    /// Return a scalar, string or container using the same rules as the output overloads.
+    template<class T>
+      requires detail::ReadableFieldValue<FieldValue, T>
+    [[nodiscard]] T getValue() const
     {
-      val = std::any_cast<T>(value);
+      T output{};
+      getValue(output);
+      return output;
     }
 
-    /**
-     * TODO
-     * @tparam T
-     * @param val
-     */
-    template<typename T,
-      typename = typename std::enable_if<std::is_same<std::string, T>::value>::type,
-      typename = typename std::enable_if<!std::is_arithmetic<T>::value>::type,
-      typename = typename T::value_type>
-    void getValue(T &val) const
-    {
-      val = std::any_cast<T>(value);
-    }
+    [[nodiscard]] const MessageField &getField() const { return field; }
+    [[nodiscard]] const FieldType &getType() const { return field.getType(); }
+    [[nodiscard]] const std::string &getName() const { return field.getName(); }
+    /// Read-only access for visitors; callers cannot change the stored type.
+    [[nodiscard]] const Storage &getValue() const { return value; }
 
-    /**
-     * TODO
-     * @return
-     */
-    [[nodiscard]] const MessageField &getField() const;
-
-    /**
-     * TODO
-     * @return
-     */
-    [[nodiscard]] const FieldType &getType() const;
-
-    /**
-     * TODO
-     * @return
-     */
-    [[nodiscard]] const std::string &getName() const;
-
-    /**
-     * TODO
-     * @return
-     */
-    [[nodiscard]] const std::any &getValue() const;
-
-    /**
-     * TODO
-     * @return
-     */
-    [[nodiscard]] bool isOutputInt8AsInt() const;
-
-    /**
-     * TODO
-     * @param outputInt8AsInt
-     */
-    void setOutputInt8AsInt(bool outputInt8AsInt);
-
-    /**
-     *
-     * @param buffer
-     * @return The number of bytes added
-     */
+    /// Compatibility entry points delegated to the binary codec.
     size_t addToBuffer(BytesBuffer &buffer) const;
-
-    /**
-     *
-     * @return the size of the field in bytes if stored in binary
-     */
-    size_t getByteSize() const;
+    [[nodiscard]] size_t getByteSize() const;
 
   private:
     MessageField field;
-    std::any value;
-    bool output_int8_as_int=false;
+    Storage value;
 
-    /**
-     * TODO
-     * @tparam ValueType
-     * @param field
-     * @param value
-     * @return
-     */
-    template<typename ValueType>
-    static std::any MakeStdAny(const MessageField &field, const ValueType &value)
+    static void checkArraySize(const MessageField &field, size_t size);
+    static Storage makeText(const MessageField &field, const std::string &text);
+
+    template<class T>
+    const T &stored() const
     {
-      auto &type = field.getType();
-      auto &name = field.getName();
-      switch (type.getBaseType())
-      {
-        case BaseType::NOT_A_TYPE:
-          throw std::logic_error("Field " + name + " as type NOT_A_TYPE");
-          break;
-        case BaseType::CHAR:
-          return std::any(static_cast<char>(value));
-        case BaseType::INT8:
-          return std::any(static_cast<int8_t>(value));
-        case BaseType::INT16:
-          return std::any(static_cast<int16_t>(value));
-        case BaseType::INT32:
-          return std::any(static_cast<int32_t>(value));
-        case BaseType::UINT8:
-          return std::any(static_cast<uint8_t>(value));
-        case BaseType::UINT16:
-          return std::any(static_cast<uint16_t>(value));
-        case BaseType::UINT32:
-          return std::any(static_cast<uint32_t>(value));
-        case BaseType::FLOAT:
-          return std::any(static_cast<float>(value));
-        case BaseType::DOUBLE:
-          return std::any(static_cast<double>(value));
-        case BaseType::STRING:
-          std::stringstream sstr;
-          sstr << value;
-          return std::any(sstr.str());
+      // Also handles requested arithmetic/container types absent from Storage.
+      return std::visit([]<class Stored>(const Stored &item) -> const T& {
+        if constexpr (std::same_as<T, Stored>) return item;
+        else throw std::bad_variant_access();
+      }, value);
+    }
+
+    template<class To, class From>
+    static To convertElement(const From &input)
+    {
+      if constexpr (std::same_as<To, std::string>) {
+        std::ostringstream stream;
+        stream << input;
+        return stream.str();
+      } else if constexpr (requires { static_cast<To>(input); }) {
+        return static_cast<To>(input);
+      } else {
+        throw std::logic_error("Cannot convert this array element to a numeric field");
       }
-      return std::any();
+    }
+
+    template<Arithmetic T>
+    static Storage makeScalar(const MessageField &field, T input)
+    {
+      if (field.getType().isArray()) {
+        throw std::logic_error("Cannot build array field " + field.getName() + " from a scalar");
+      }
+      return detail::visitBaseType(field.getType().getBaseType(), [&]<class Target>() -> Storage {
+        return convertElement<Target>(input);
+      });
+    }
+
+    template<FieldValueContainer Container>
+    static Storage makeArray(const MessageField &field, const Container &input)
+    {
+      checkArraySize(field, input.size());
+      return detail::visitBaseType(field.getType().getBaseType(), [&]<class Target>() -> Storage {
+        std::vector<Target> result;
+        result.reserve(input.size());
+        for (const auto &element : input) result.push_back(convertElement<Target>(element));
+        return result;
+      });
     }
   };
 }
-std::ostream& operator<<(std::ostream& o,const pprzlink::FieldValue& v);
 
-#endif //PPRZLINKCPP_FIELDVALUE_H
+/// Human-readable output with numeric int8/uint8 values; does not mutate the field.
+std::ostream& operator<<(std::ostream &stream, const pprzlink::FieldValue &value);
+
+#endif // PPRZLINKCPP_FIELDVALUE_H

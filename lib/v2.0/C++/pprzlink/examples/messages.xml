@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<protocol>
+  <msg_class name="example" id="1">
+    <message name="EXAMPLE_ALTITUDE" id="1">
+      <field name="altitude" type="float" unit="m"/>
+    </message>
+  </msg_class>
+</protocol>

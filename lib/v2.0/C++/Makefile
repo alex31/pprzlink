@@ -19,56 +19,44 @@
 # <http://www.gnu.org/licenses/>.
 #
 
-MAKE = make
-
-all:
+PKG_CONFIG ?= pkg-config
 
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 current_dir := $(dir $(mkfile_path))
-
-SRC_DIR=$(DESTDIR)/share/src
 INCLUDE_DIR=$(DESTDIR)/include
 LIB_DIR=$(DESTDIR)/lib
-OBJ_DIR=$(PWD)/build/C++
+OBJ_DIR ?= $(CURDIR)/build/C++
 
 PPRZLINK_HEADERS=$(wildcard pprzlink/*.h)
 PPRZLINK_SRC=$(wildcard pprzlink/*.cpp)
-
 PPRZLINK_OBJS=$(patsubst %.cpp,$(OBJ_DIR)/%.o,$(PPRZLINK_SRC))
 
-IVYC++_HEADERS=ivy-c++/IvyApplication.h ivy-c++/Ivy.h ivy-c++/IvyCallback.h
-IVYC++_SRCS=ivy-c++/IvyApplication.cpp ivy-c++/Ivy.cpp
+IVY_CFLAGS = $(shell $(PKG_CONFIG) --cflags 'ivy-cpp >= 3.18' tinyxml2)
+IVY_LIBS = $(shell $(PKG_CONFIG) --libs 'ivy-cpp >= 3.18' tinyxml2)
 
-IVYC++_OBJS=$(patsubst %.cpp,$(OBJ_DIR)/%.o,$(IVYC++_SRCS))
+.PHONY: all libpprzlink++ install check-deps
+all: libpprzlink++
 
-INCLUDE_FLAG=-I$(current_dir)
-CXXFLAGS= --std=c++17 -Wall -fPIC -flto $(INCLUDE_FLAG)
+check-deps:
+	$(PKG_CONFIG) --print-errors --exists 'ivy-cpp >= 3.18' tinyxml2
 
-.PHONY: install copy-ivyqt prepare-build
+$(OBJ_DIR)/%.o: %.cpp | check-deps
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) -I$(current_dir) $(IVY_CFLAGS) $(CXXFLAGS) -std=c++23 -Wall -Wextra -fPIC -pthread -MMD -MP -c $< -o $@
 
-$(OBJ_DIR)/%.o: %.cpp
-	$(Q)echo Compiling $<
-	$(Q)$(CXX) -c $(CXXFLAGS) $< -o $@
+libpprzlink++: $(OBJ_DIR)/libpprzlink++.so $(OBJ_DIR)/libpprzlink++.a
 
-prepare-build:
-	$(Q)test -d $(OBJ_DIR)/pprzlink || mkdir -p $(OBJ_DIR)/pprzlink
-	$(Q)test -d $(OBJ_DIR)/ivy-c++ || mkdir -p $(OBJ_DIR)/ivy-c++
+$(OBJ_DIR)/libpprzlink++.so: $(PPRZLINK_OBJS)
+	$(CXX) $(LDFLAGS) -shared -o $@ $^ $(LDLIBS) $(IVY_LIBS) -pthread
 
-libpprzlink++: prepare-build $(IVYC++_OBJS) $(PPRZLINK_OBJS) $(IVYC++_HEADERS) $(PPRZLINK_HEADERS)
-	@echo Building $@
-	$(Q)$(CXX) -shared -o $(OBJ_DIR)/libpprzlink++.so $(IVYC++_OBJS) $(PPRZLINK_OBJS)
-	$(Q)ar rcs $(OBJ_DIR)/libpprzlink++.a $(IVYC++_OBJS) $(PPRZLINK_OBJS)
+$(OBJ_DIR)/libpprzlink++.a: $(PPRZLINK_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
 
-install: 
-	$(Q)test -d $(INCLUDE_DIR)/pprzlink || mkdir -p $(INCLUDE_DIR)/pprzlink
-	$(Q)test -d $(INCLUDE_DIR)/ivy-c++ || mkdir -p $(INCLUDE_DIR)/ivy-c++
-	$(Q)cp $(PPRZLINK_HEADERS) $(INCLUDE_DIR)/pprzlink
-	$(Q)cp -R pprzlink/exceptions $(INCLUDE_DIR)/pprzlink
-	$(Q)cp $(IVYC++_HEADERS) $(INCLUDE_DIR)/ivy-c++
-	$(Q)test -d $(LIB_DIR) || mkdir -p $(LIB_DIR)
-	$(Q)cp $(OBJ_DIR)/libpprzlink++.* $(LIB_DIR)
+install: libpprzlink++
+	mkdir -p $(INCLUDE_DIR)/pprzlink $(LIB_DIR)
+	cp $(PPRZLINK_HEADERS) $(INCLUDE_DIR)/pprzlink
+	cp -R pprzlink/exceptions $(INCLUDE_DIR)/pprzlink
+	cp $(OBJ_DIR)/libpprzlink++.* $(LIB_DIR)
 
-copy-ivyqt: 
-	$(Q)test -d $(SRC_DIR) || mkdir -p $(SRC_DIR)
-	$(Q)cp ivy-c++/ivyqtloop.h $(SRC_DIR)
-	$(Q)cp ivy-c++/ivyqtloop.cpp $(SRC_DIR)
+-include $(PPRZLINK_OBJS:.o=.d)

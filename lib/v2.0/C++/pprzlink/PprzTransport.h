@@ -17,12 +17,6 @@
  *
  */
 
-/** \file PprzTransport.h
- *
- *
- */
-
-
 #ifndef PPRZLINKCPP_PPRZTRANSPORT_H
 #define PPRZLINKCPP_PPRZTRANSPORT_H
 
@@ -48,21 +42,23 @@
 #define PPRZ_STX (0x99)
 
 namespace pprzlink {
+  /// Frame Messages as PprzLink v2 bytes and decode incoming frames from its owned Device.
   class PprzTransport : public Transport {
   public:
-    PprzTransport(Device *device, const MessageDictionary &dictionary);
+    PprzTransport(std::unique_ptr<Device> device, const MessageDictionary &dictionary);
 
+    /// Discard noise, bad lengths and checksums; retain incomplete frames.
+    /// Invalid payloads/unknown definitions throw after consuming their frame.
     bool hasMessage() override;
 
     std::unique_ptr<Message> getMessage() override;
 
-    size_t sendMessage(Message const &msg) override;
+    size_t sendMessage(const Message &msg) override;
   protected:
     bool decodeMessage();
-
 
     BytesBuffer transportBuffer;
     std::unique_ptr<Message> currentMessage;
   };
 }
-#endif //PPRZLINKCPP_PPRZTRANSPORT_H
+#endif // PPRZLINKCPP_PPRZTRANSPORT_H

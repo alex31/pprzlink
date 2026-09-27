@@ -17,209 +17,73 @@
  *
  */
 
-/** \file IvyLink.h
- *
- *
- */
-
-
 #ifndef PPRZLINKCPP_IVYLINK_H
 #define PPRZLINKCPP_IVYLINK_H
 
-#include <string>
-#include <pprzlink/MessageDictionary.h>
-#include <ivy-c++/Ivy.h>
+#include <Ivy/ivy.hpp>
+#include <Ivy/ivy_thread.hpp>
 #include <pprzlink/Message.h>
-#include <boost/bimap.hpp>
+#include <pprzlink/MessageDictionary.h>
+#include <atomic>
+#include <functional>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <string>
 
 namespace pprzlink {
-  class MessageCallback;
-  class AircraftCallback;
-  class RequestCallback;
 
-  using messageCallback_t = std::function<void(std::string,Message)>;
-  using answererCallback_t = std::function<Message(std::string,Message)>;
+  using messageCallback_t = std::function<void(std::string, Message)>;
+  using answererCallback_t = std::function<Message(std::string, Message)>;
 
-  /**
-   *
+  /** Owns an independent Ivy bus. The dictionary must outlive the link.
+   * Sends and subscription operations may be called from multiple threads.
+   * Callbacks run on the bus's event loop; synchronize shared application data.
+   * Destroy the link after external callers/loops have finished, never from a callback.
    */
-  class IvyLink : public IvyApplicationCallback {
+  class IvyLink {
   public:
-    /**
-     *
-     * @param dict
-     * @param appName
-     * @param domain
-     * @param threadedIvy
+    /** Start a bus, optionally running its event loop on an owned thread.
+     * With threadedIvy=false, call run() to service this bus.
      */
-    IvyLink(MessageDictionary const & dict , std::string appName, std::string domain = "127.255.255.255:2010", bool threadedIvy = false);
-
-    /**
-     *
-     */
+    IvyLink(const MessageDictionary &dict, std::string appName,
+            std::string domain = "127.255.255.255:2010", bool threadedIvy = false);
     ~IvyLink();
 
-    /**
-     *
-     * @param def
-     * @param cb
-     * @return
-     */
-    long BindMessage(MessageDefinition const & def, messageCallback_t cb);
+    IvyLink(const IvyLink&) = delete;
+    IvyLink& operator=(const IvyLink&) = delete;
+    IvyLink(IvyLink&&) = delete;
+    IvyLink& operator=(IvyLink&&) = delete;
 
-    /**
-     * Bind on all messages coming from given ac_id
-     * @param ac_id
-     * @param cb
-     * @return
-     */
+    long BindMessage(const MessageDefinition &def, messageCallback_t cb);
+
+    /// Bind all dictionary messages from this literal sender ID.
     long BindOnSrcAc(std::string ac_id, messageCallback_t cb);
-
-    /**
-     *
-     * @param bindId
-     */
+    /// Cancel a binding. An already executing callback may finish after return.
     void UnbindMessage(long bindId);
-
-    /**
-     *
-     * @param ac_id
-     * @param msg
-     */
-    void sendMessage(const Message& msg);
-
-    long sendRequest(const Message& msg, messageCallback_t cb);
-
+    void sendMessage(const Message &msg);
+    long sendRequest(const Message &msg, messageCallback_t cb);
     long registerRequestAnswerer(const MessageDefinition &def, answererCallback_t cb);
 
-  private:
-    const MessageDictionary &dictionary;
-    std::string domain;
-    std::string appName;
-    Ivy *bus;
-    bool threaded;
-    unsigned int requestNb;
-    boost::bimap<std::string, long> requestBindId;
-
-    void getMessageData(const Message& msg, std::string &ac_id, std::string &name, std::string &fieldStream);
-
-    /**
-     *
-     * @param def
-     * @return
-     */
-    std::string regexpForMessageDefinition(MessageDefinition const & def);
-
-    std::string messageRegexp(MessageDefinition const & def);
-
-    std::map<long,MessageCallback*> messagesCallbackMap;
-    std::map<long,AircraftCallback*> aircraftCallbackMap;
-    std::map<long,RequestCallback*> requestCallbackMap;
-
-    /**
-     *
-     * @param app
-     */
-    void OnApplicationConnected(IvyApplication *app) override;
-
-    /**
-     *
-     * @param app
-     */
-    void OnApplicationDisconnected(IvyApplication *app) override;
-
-    /**
-     *
-     * @param app
-     */
-    void OnApplicationCongestion(IvyApplication *app) override;
-
-    /**
-     *
-     * @param app
-     */
-    void OnApplicationDecongestion(IvyApplication *app) override;
-
-    /**
-     *
-     * @param app
-     */
-    void OnApplicationFifoFull(IvyApplication *app) override;
-  };
-
-  /**
-   *
-   */
-  class MessageCallback : public IvyMessageCallback {
-  public:
-    /**
-     *
-     * @param dictionary
-     * @param cb
-     */
-    MessageCallback(const MessageDictionary &dictionary,const messageCallback_t &cb);
-
-    /**
-     *
-     * @param app
-     * @param argc
-     * @param argv
-     */
-    void OnMessage(IvyApplication *app, int argc, const char **argv) override;
+    /// Run the loop on this thread (only when constructed with threadedIvy=false).
+    void run();
+    /// Request stop; safe inside callbacks. Destruction joins the owned thread.
+    void stop();
+    /// Borrow the bus for native API access and take_callback_error() inspection.
+    /// Do not move/destroy it or run a second loop on it.
+    ivy::Bus& getBus() noexcept { return bus; }
 
   private:
     const MessageDictionary &dictionary;
-    messageCallback_t cb;
+    ivy::Bus bus;
+    std::mutex subscriptionsMutex;
+    std::map<long, ivy::Subscription> subscriptions;
+    std::atomic<long> nextBindId{1};
+    // Declared last: stop/join before destroying subscriptions or the bus.
+    std::optional<ivy::LoopThread> loop;
+
+    long storeSubscription(ivy::Bus::BindResult result);
+    void storeSubscription(long id, ivy::Bus::BindResult result);
   };
-
-  /**
- *
- */
-  class AircraftCallback : public IvyMessageCallback {
-  public:
-    /**
-     *
-     * @param dictionary
-     * @param cb
-     */
-    AircraftCallback(const MessageDictionary &dictionary,const messageCallback_t &cb);
-
-    /**
-     *
-     * @param app
-     * @param argc
-     * @param argv
-     */
-    void OnMessage(IvyApplication *app, int argc, const char **argv) override;
-
-  private:
-    const MessageDictionary &dictionary;
-    messageCallback_t cb;
-  };
-
-
-  class RequestCallback : public MessageCallback {
-  public:
-    /**
-     *
-     * @param dictionary
-     * @param cb
-     */
-    RequestCallback(const MessageDictionary &dictionary,const messageCallback_t &cb);
-
-    /**
-     *
-     * @param app
-     * @param argc
-     * @param argv
-     */
-    void OnMessage(IvyApplication *app, int argc, const char **argv) override;
-
-    std::string& getRequestId() {return requestId;}
-
-  private:
-    std::string requestId;
-  };
-
 }
-#endif //PPRZLINKCPP_IVYLINK_H
+#endif // PPRZLINKCPP_IVYLINK_H

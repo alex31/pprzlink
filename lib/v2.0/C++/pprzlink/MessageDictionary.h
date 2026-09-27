@@ -17,11 +17,6 @@
  *
  */
 
-/** \file MessageDictionnary.h
- *
- *
- */
-
 #ifndef PPRZLINKCPP_MESSAGEDICTIONARY_H
 #define PPRZLINKCPP_MESSAGEDICTIONARY_H
 
@@ -31,16 +26,18 @@
 #include <pprzlink/MessageDefinition.h>
 
 namespace pprzlink {
+  /// Load and own XML message definitions, indexed by name and class/message IDs.
+  /// Definition references remain valid while this dictionary is alive and unchanged.
   class MessageDictionary {
   public:
-    MessageDictionary(std::string const &fileName);
-    MessageDictionary(tinyxml2::XMLElement* root);
+    MessageDictionary(const std::string &fileName);
+    MessageDictionary(tinyxml2::XMLElement *root);
 
-    [[nodiscard]] const MessageDefinition &getDefinition(std::string const &name) const;
+    [[nodiscard]] const MessageDefinition &getDefinition(const std::string &name) const;
 
     [[nodiscard]] const MessageDefinition &getDefinition(int classId, int msgId) const;
 
-    [[nodiscard]] std::pair<int,int> getMessageId(std::string name) const;
+    [[nodiscard]] std::pair<int, int> getMessageId(std::string name) const;
     [[nodiscard]] std::string getMessageName(int classId, int msgId) const;
 
     [[nodiscard]] int getClassId(std::string name) const;
@@ -50,10 +47,10 @@ namespace pprzlink {
     [[nodiscard]] std::vector<MessageDefinition> getMsgsForClass(int classId) const;
 
   private:
-    void loadXml(tinyxml2::XMLElement* root, std::string const &fileName);
+    void loadXml(tinyxml2::XMLElement *root, const std::string &fileName);
     std::map<std::string, MessageDefinition> messagesDict;
     boost::bimap<std::string, std::pair<int, int>> msgNameToId;
-    boost::bimap<int,std::string> classMap;
+    boost::bimap<int, std::string> classMap;
   };
 }
-#endif //PPRZLINKCPP_MESSAGEDICTIONARY_H
+#endif // PPRZLINKCPP_MESSAGEDICTIONARY_H

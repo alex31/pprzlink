@@ -1,0 +1,291 @@
+#include <pprzlink/IvyLink.h>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <thread>
+#include <unistd.h>
+
+using namespace std::chrono_literals;
+using pprzlink::IvyLink;
+using pprzlink::Message;
+using pprzlink::MessageDictionary;
+
+namespace {
+  void require(bool condition, const std::string &description)
+  {
+    if (!condition) throw std::runtime_error(description);
+  }
+
+  template<class Predicate>
+  void waitFor(Predicate predicate, const std::string &description)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + 4s;
+    while (!predicate()) {
+      require(std::chrono::steady_clock::now() < deadline, "Timeout: " + description);
+      std::this_thread::sleep_for(5ms);
+    }
+  }
+
+  template<class T>
+  T field(const Message &msg, const std::string &name)
+  {
+    T value;
+    msg.getField(name, value);
+    return value;
+  }
+
+  void waitBindings(IvyLink &sender, const std::string &peerName, size_t count)
+  {
+    waitFor([&] {
+      auto peer = sender.getBus().find_application(peerName);
+      if (!peer || !*peer) return false;
+      auto regexps = sender.getBus().application_regexps(**peer);
+      return regexps && regexps->size() == count;
+    }, "bindings of " + peerName);
+  }
+
+  void sendRaw(IvyLink &link, std::string_view text)
+  {
+    auto result = link.getBus().send(text);
+    require(result.has_value(), "Raw Ivy send");
+  }
+
+  void testMessages(const MessageDictionary &dict, const std::string &domain)
+  {
+    std::atomic<int> decoded{0}, aircraft{0}, empty{0}, singles{0};
+    // Callback state is declared before the buses so it outlives their threads.
+    IvyLink receiver(dict, "messages-rx", domain, true);
+    const auto valuesId = receiver.BindMessage(dict.getDefinition("VALUES"), [&](std::string sender, Message msg) {
+      require(sender == "42", "Sender callback argument");
+      require(std::get<std::string>(msg.getSenderId()) == "42", "Message sender");
+      require(field<char>(msg, "character") == 'Z', "char");
+      require(field<int8_t>(msg, "i8") == -128, "int8");
+      require(field<int16_t>(msg, "i16") == -32768, "int16");
+      require(field<int32_t>(msg, "i32") == -2147483647 - 1, "int32");
+      require(field<uint8_t>(msg, "u8") == 255, "uint8");
+      require(field<uint16_t>(msg, "u16") == 65535, "uint16");
+      require(field<uint32_t>(msg, "u32") == 4294967295u, "uint32");
+      require(field<float>(msg, "f") == 125.f, "float exponent");
+      require(field<double>(msg, "d") == -0.025, "double exponent");
+      require(field<std::string>(msg, "text") == "100% ready", "quoted string");
+      require(field<std::vector<char>>(msg, "chars") == std::vector<char>({'a', ' ', 'b'}), "char array");
+      require(field<std::vector<int16_t>>(msg, "array") == std::vector<int16_t>({-2, 3}), "numeric array");
+      require(field<std::vector<uint8_t>>(msg, "fixed") == std::vector<uint8_t>({0, 255}), "fixed array");
+      require(field<std::vector<float>>(msg, "blank").empty(), "empty array");
+      ++decoded;
+    });
+    receiver.BindOnSrcAc("plane.1", [&](std::string sender, Message msg) {
+      require(sender == "plane.1", "Literal aircraft ID");
+      require(field<std::string>(msg, "text") == "100% ready", "Aircraft quoted fields");
+      require(field<std::vector<int16_t>>(msg, "array").size() == 2, "Aircraft array");
+      ++aircraft;
+    });
+    receiver.BindMessage(dict.getDefinition("EMPTY"), [&](std::string, Message msg) {
+      require(msg.getNbValues() == 0, "Fieldless message");
+      ++empty;
+    });
+    receiver.BindMessage(dict.getDefinition("SINGLE"), [&](std::string, Message msg) {
+      require(field<std::vector<int8_t>>(msg, "values") == std::vector<int8_t>({-1}), "Single element array");
+      require(field<std::string>(msg, "text").empty(), "Empty quoted string");
+      ++singles;
+    });
+    IvyLink sender(dict, "messages-tx", domain, true);
+    waitBindings(sender, "messages-rx", 4);
+    const std::string payload = " VALUES Z -128 -32768 -2147483648 255 65535 4294967295 1.25e2 -2.5e-2 \"100% ready\" \"a b\" -2,3 0,255 ";
+    sendRaw(sender, "42" + payload);
+    // Temporarily cancel the generic VALUES binding before testing aircraft routing.
+    waitFor([&] { return decoded == 1; }, "dynamic field conversions");
+    receiver.UnbindMessage(valuesId);
+    waitBindings(sender, "messages-rx", 3);
+    sendRaw(sender, "planeX1" + payload); // A dot in an aircraft ID is not a regexp wildcard.
+    sendRaw(sender, "plane.1" + payload);
+    Message noFields(dict.getDefinition("EMPTY"));
+    noFields.setSenderId(uint8_t{42});
+    sender.sendMessage(noFields);
+    sendRaw(sender, "42 EMPTY "); // Older senders append one space.
+    Message single(dict.getDefinition("SINGLE"));
+    single.setSenderId(uint8_t{42});
+    single.addField("values", std::vector<int8_t>{-1});
+    single.addField("text", std::string{});
+    sender.sendMessage(single);
+    waitFor([&] { return aircraft == 1 && empty == 2 && singles == 1; }, "aircraft/empty/array messages");
+    require(receiver.getBus().take_callback_error().has_value(), "Message callback error");
+    std::cout << "XML field conversions, aircraft routing and round trips passed\n";
+  }
+
+  void testRequests(const MessageDictionary &dict, const std::string &domain)
+  {
+    std::atomic<int> replies{0}, answered{0}, emptyReplies{0};
+    IvyLink server(dict, "request-server", domain, true);
+    const auto answerId = server.registerRequestAnswerer(dict.getDefinition("ANSWER_REQ"),
+      [&](std::string sender, Message request) {
+        require(sender == "client", "Request sender");
+        require(std::get<std::string>(request.getSenderId()) == sender, "Request message sender");
+        Message answer(dict.getDefinition("ANSWER"));
+        answer.setSenderId(std::string("server"));
+        answer.addField("value", field<uint32_t>(request, "value") + 1);
+        ++answered;
+        return answer;
+      });
+    require(answerId > 0, "Answerer returns a usable subscription ID");
+    server.registerRequestAnswerer(dict.getDefinition("EMPTY_REQ"), [&](std::string, Message) {
+      Message answer(dict.getDefinition("EMPTY"));
+      answer.setSenderId(std::string("server"));
+      return answer;
+    });
+    IvyLink first(dict, "request-first", domain, true);
+    IvyLink second(dict, "request-second", domain, true);
+    waitBindings(first, "request-server", 2);
+    waitBindings(second, "request-server", 2);
+    auto issueRequests = [&](IvyLink &client, uint32_t base) {
+      for (uint32_t i = 0; i < 10; ++i) {
+        Message request(dict.getDefinition("ANSWER_REQ"));
+        request.setSenderId(std::string("client"));
+        request.addField("value", base + i);
+        client.sendRequest(request, [&, expected = base + i + 1](std::string sender, Message answer) {
+          require(sender == "server", "Reply sender");
+          require(field<uint32_t>(answer, "value") == expected, "Reply matched to correct request");
+          ++replies;
+        });
+      }
+    };
+    std::jthread one([&] { issueRequests(first, 100); });
+    std::jthread two([&] { issueRequests(second, 200); });
+    one.join();
+    two.join();
+    waitFor([&] { return replies == 20; }, "concurrent requests on two links");
+    require(answered == 20, "Exactly one answer per request");
+    waitBindings(server, "request-first", 0);
+    waitBindings(server, "request-second", 0);
+    Message emptyRequest(dict.getDefinition("EMPTY_REQ"));
+    emptyRequest.setSenderId(std::string("client"));
+    first.sendRequest(emptyRequest, [&](std::string, Message) { ++emptyReplies; });
+    waitFor([&] { return emptyReplies == 1; }, "fieldless request and answer");
+    server.UnbindMessage(answerId);
+    waitBindings(first, "request-server", 1);
+    Message request(dict.getDefinition("ANSWER_REQ"));
+    request.setSenderId(std::string("client"));
+    request.addField("value", uint32_t{1});
+    const auto canceled = first.sendRequest(request, [](std::string, Message) {
+      throw std::runtime_error("Canceled request delivered");
+    });
+    first.UnbindMessage(canceled);
+    first.UnbindMessage(canceled);
+    waitBindings(server, "request-first", 0);
+    require(first.getBus().take_callback_error().has_value(), "First client callback error");
+    require(second.getBus().take_callback_error().has_value(), "Second client callback error");
+    require(server.getBus().take_callback_error().has_value(), "Answerer callback error");
+    std::cout << "Concurrent requests, correlation and cancellation passed\n";
+  }
+
+  void testIsolation(const MessageDictionary &dict, const std::string &domainA, const std::string &domainB)
+  {
+    std::atomic<int> firstCount{0}, secondCount{0}, selfCount{0};
+    auto first = std::make_unique<IvyLink>(dict, "isolation-a", domainA, true);
+    IvyLink second(dict, "isolation-b", domainB, true);
+    first->BindMessage(dict.getDefinition("EMPTY"), [&](std::string, Message) { ++firstCount; });
+    second.BindMessage(dict.getDefinition("EMPTY"), [&](std::string, Message) { ++secondCount; });
+    IvyLink txA(dict, "isolation-tx-a", domainA, true);
+    IvyLink txB(dict, "isolation-tx-b", domainB, true);
+    waitBindings(txA, "isolation-a", 1);
+    waitBindings(txB, "isolation-b", 1);
+    sendRaw(txA, "42 EMPTY");
+    waitFor([&] { return firstCount == 1; }, "first bus");
+    require(secondCount == 0, "Different bus domains are isolated");
+    first.reset(); // Must stop/join only this context.
+    sendRaw(txB, "42 EMPTY");
+    waitFor([&] { return secondCount == 1; }, "surviving bus after another link's destruction");
+    std::atomic<long> selfId{0};
+    selfId = second.BindMessage(dict.getDefinition("SINGLE"), [&](std::string, Message) {
+      second.UnbindMessage(selfId);
+      ++selfCount;
+    });
+    waitBindings(txB, "isolation-b", 2);
+    sendRaw(txB, "42 SINGLE -1 \"\"");
+    waitFor([&] { return selfCount == 1; }, "self-unbinding callback");
+    waitBindings(txB, "isolation-b", 1);
+    std::vector<std::jthread> workers;
+    for (int t = 0; t < 4; ++t) {
+      workers.emplace_back([&] {
+        Message message(dict.getDefinition("EMPTY"));
+        message.setSenderId(uint8_t{42});
+        for (int i = 0; i < 25; ++i) {
+          const auto id = second.BindMessage(dict.getDefinition("SINGLE"), [](std::string, Message) {});
+          txB.sendMessage(message);
+          second.UnbindMessage(id);
+        }
+      });
+    }
+    workers.clear(); // Join before checking delivery.
+    waitFor([&] { return secondCount == 101; }, "100 concurrent sends and subscription changes");
+    require(second.getBus().take_callback_error().has_value(), "Isolation callback error");
+    std::cout << "Independent buses, shutdown, self-unbind and concurrent sends passed\n";
+  }
+
+  void testLifecycleAndErrors(const MessageDictionary &dict, const std::string &domain)
+  {
+    IvyLink manual(dict, "manual-loop", domain);
+    auto timer = manual.getBus().bind_event([&](std::chrono::milliseconds) { manual.stop(); }, ivy::after(10ms));
+    require(timer.has_value(), "Manual loop timer registration");
+    manual.run();
+    bool sendFailed = false;
+    try {
+      Message msg(dict.getDefinition("EMPTY"));
+      msg.setSenderId(uint8_t{42});
+      manual.sendMessage(msg);
+    } catch (const std::system_error&) {
+      sendFailed = true;
+    }
+    require(sendFailed, "Stopped-bus send surfaces Ivy error");
+
+    std::atomic<int> invalidDelivered{0};
+    IvyLink receiver(dict, "range-rx", domain, true);
+    receiver.BindMessage(dict.getDefinition("BYTE"), [&](std::string, Message) { ++invalidDelivered; });
+    IvyLink sender(dict, "range-tx", domain, true);
+    waitBindings(sender, "range-rx", 1);
+    sendRaw(sender, "42 BYTE 256");
+    waitFor([&] { return receiver.getBus().state() == IVY_CTX_STOPPED; }, "conversion failure stops bus");
+    require(invalidDelivered == 0, "Out-of-range uint8 must not wrap");
+    require(!receiver.getBus().take_callback_error(), "Callback failure is observable");
+    std::cout << "Manual loop, stopped-bus errors and range validation passed\n";
+  }
+}
+
+int main()
+{
+  try {
+    tinyxml2::XMLDocument xml;
+    require(xml.Parse(R"(<protocol><msg_class name="test" id="1">
+      <message NAME="VALUES" ID="1">
+        <field name="character" type="char"/><field name="i8" type="int8"/>
+        <field name="i16" type="int16"/><field name="i32" type="int32"/>
+        <field name="u8" type="uint8"/><field name="u16" type="uint16"/>
+        <field name="u32" type="uint32"/><field name="f" type="float"/>
+        <field name="d" type="double"/><field name="text" type="string"/>
+        <field name="chars" type="char[]"/><field name="array" type="int16[]"/>
+        <field name="fixed" type="uint8[2]"/><field name="blank" type="float[]"/>
+      </message>
+      <message name="EMPTY" id="2"/><message name="EMPTY_REQ" id="3"/>
+      <message name="ANSWER" id="4"><field name="value" type="uint32"/></message>
+      <message name="ANSWER_REQ" id="5"><field name="value" type="uint32"/></message>
+      <message name="SINGLE" id="6"><field name="values" type="int8[]"/><field name="text" type="string"/></message>
+      <message name="BYTE" id="7"><field name="value" type="uint8"/></message>
+    </msg_class></protocol>)") == tinyxml2::XML_SUCCESS, "Test dictionary XML");
+    MessageDictionary dict(xml.RootElement());
+    require(dict.getDefinition("VALUES").getName() == "VALUES", "Uppercase XML message name");
+    require(dict.getDefinition("EMPTY").getId() == 2, "Lowercase XML message ID");
+    const int port = 25000 + (getpid() % 10000) * 2;
+    const auto domainA = "127.255.255.255:" + std::to_string(port);
+    const auto domainB = "127.255.255.255:" + std::to_string(port + 1);
+    testMessages(dict, domainA);
+    testRequests(dict, domainA);
+    testIsolation(dict, domainA, domainB);
+    testLifecycleAndErrors(dict, domainA);
+  } catch (const std::exception &error) {
+    std::cerr << error.what() << '\n';
+    return 1;
+  }
+}

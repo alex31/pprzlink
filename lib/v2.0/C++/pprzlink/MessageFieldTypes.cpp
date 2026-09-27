@@ -17,111 +17,83 @@
  *
  */
 
-/** \file MessageFieldTypes.cpp
- *
- *
- */
-
-#include <map>
-#include <sstream>
-#include <iostream>
-#include <pprzlink/exceptions/pprzlink_exception.h>
 #include "MessageFieldTypes.h"
+#include <pprzlink/exceptions/pprzlink_exception.h>
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <format>
+#include <limits>
+#include <string_view>
 
 namespace pprzlink {
+  namespace {
+    struct TypeInfo {
+      BaseType type;
+      std::string_view name;
+      size_t size;
+    };
+    constexpr std::array types{
+      TypeInfo{BaseType::CHAR, "char", 1},
+      TypeInfo{BaseType::INT8, "int8", 1},
+      TypeInfo{BaseType::INT16, "int16", 2},
+      TypeInfo{BaseType::INT32, "int32", 4},
+      TypeInfo{BaseType::UINT8, "uint8", 1},
+      TypeInfo{BaseType::UINT16, "uint16", 2},
+      TypeInfo{BaseType::UINT32, "uint32", 4},
+      TypeInfo{BaseType::FLOAT, "float", 4},
+      TypeInfo{BaseType::DOUBLE, "double", 8},
+      TypeInfo{BaseType::STRING, "string", 0}
+    };
 
-  const std::map<BaseType,size_t> sizeofTypeMap = {
-    {BaseType::CHAR, 1},
-    {BaseType::INT8, 1},
-    {BaseType::INT16, 2},
-    {BaseType::INT32, 4},
-    {BaseType::UINT8, 1},
-    {BaseType::UINT16, 2},
-    {BaseType::UINT32, 4},
-    {BaseType::FLOAT, 4},
-    {BaseType::DOUBLE, 8},
-    {BaseType::STRING, 0}
-  };
-
-  static const std::map<BaseType,std::string> typeMap{
-    {BaseType::CHAR, "char"},
-    {BaseType::INT8, "int8"},
-    {BaseType::INT16, "int16"},
-    {BaseType::INT32, "int32"},
-    {BaseType::UINT8, "uint8"},
-    {BaseType::UINT16, "uint16"},
-    {BaseType::UINT32, "uint32"},
-    {BaseType::FLOAT, "float"},
-    {BaseType::DOUBLE, "double"},
-    {BaseType::STRING, "string"}
-  };
-
-  FieldType::FieldType(std::string const &typeString)
-  : baseType(BaseType::NOT_A_TYPE), arraySize(-1)
-  {
-    for (const auto& pairs : typeMap)
+    const TypeInfo &typeInfo(BaseType type)
     {
-      if (typeString.find(pairs.second)==0)
-      {
-        baseType = pairs.first;
-        break;
-      }
-    }
-    if (baseType==BaseType::NOT_A_TYPE)
-      throw pprzlink::bad_message_file("Field with type string "+typeString+ " resolved to NOT_A_TYPE");
-    auto openSquareBracketPos=typeString.find('[');
-    if (openSquareBracketPos != std::string::npos) // This is an array
-    {
-      auto closeSquareBracketPos=typeString.find(']');
-      if (openSquareBracketPos==closeSquareBracketPos-1)
-      {
-        // Dynamic array
-        arraySize=0;
-      }
-      else
-      {
-        std::stringstream sstr(typeString.substr(openSquareBracketPos+1,closeSquareBracketPos));
-        sstr >> arraySize;
-      }
+      const auto found = std::ranges::find(types, type, &TypeInfo::type);
+      if (found == types.end()) throw std::logic_error("Unknown PprzLink base type");
+      return *found;
     }
   }
 
-  BaseType FieldType::getBaseType() const
+  FieldType::FieldType(const std::string &typeString) : baseType(BaseType::NOT_A_TYPE)
   {
-    return baseType;
+    const std::string_view text(typeString);
+    const auto bracket = text.find('[');
+    const auto found = std::ranges::find(types, text.substr(0, bracket), &TypeInfo::name);
+    const auto invalid = [&] { return bad_message_file("Invalid field type '" + typeString + "'"); };
+    if (found == types.end()) throw invalid();
+    baseType = found->type;
+    if (bracket == std::string_view::npos) return; // Scalar.
+    if (!text.ends_with(']')) throw invalid();
+    const auto count = text.substr(bracket + 1, text.size() - bracket - 2);
+    if (count.empty()) {
+      arraySize = 0; // Dynamic array: [] only, never [0].
+      return;
+    }
+    size_t size = 0;
+    const auto [end, error] = std::from_chars(count.data(), count.data() + count.size(), size);
+    if (error != std::errc{} || end != count.data() + count.size() || size == 0 ||
+        size > std::numeric_limits<size_t>::max() / std::max(size_t{1}, found->size)) {
+      throw invalid();
+    }
+    arraySize = size;
   }
 
-  bool FieldType::isArray() const
-  {
-    return arraySize != -1;
-  }
+  BaseType FieldType::getBaseType() const { return baseType; }
+  bool FieldType::isArray() const { return arraySize.has_value(); }
 
   size_t FieldType::getArraySize() const
   {
-    return arraySize;
+    if (!arraySize) throw std::logic_error("Scalar field has no array size");
+    return *arraySize;
   }
 
   std::string FieldType::toString() const
   {
-    std::stringstream sstr;
-    auto baseTypeStr = typeMap.find(baseType)->second;
-    sstr << baseTypeStr;
-    if (arraySize>0)
-    {
-      sstr << '[' << arraySize << ']';
-    }
-    else if (arraySize==0)
-    {
-      sstr << "[]";
-    }
-    return sstr.str();
+    const auto name = typeInfo(baseType).name;
+    if (!arraySize) return std::string(name);
+    if (*arraySize == 0) return std::format("{}[]", name);
+    return std::format("{}[{}]", name, *arraySize);
   }
 
-  size_t sizeofBaseType(BaseType type)
-  {
-    if (type==BaseType::NOT_A_TYPE)
-      throw std::logic_error("Type NOT_A_TYPE in sizeofBaseType");
-
-    return sizeofTypeMap.find(type)->second;
-  }
+  size_t sizeofBaseType(BaseType type) { return typeInfo(type).size; }
 }

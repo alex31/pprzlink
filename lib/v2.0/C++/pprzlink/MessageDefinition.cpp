@@ -17,72 +17,38 @@
  *
  */
 
-/** \file MessageDefinition.cpp
- *
- *
- */
-
-#include <iostream>
-#include <sstream>
 #include <pprzlink/MessageDefinition.h>
 #include <pprzlink/exceptions/pprzlink_exception.h>
+#include "detail/XmlReader.h"
+#include <format>
 
 namespace pprzlink {
-  MessageDefinition::MessageDefinition()
+  MessageDefinition::MessageDefinition() : classId(0), id(0) {}
+
+  MessageDefinition::MessageDefinition(const tinyxml2::XMLElement *xml, int classId)
     : classId(0), id(0)
   {
-  }
-
-  MessageDefinition::MessageDefinition(tinyxml2::XMLElement *xml, int classId)
-    : classId(classId), id(-1)
-  {
-    auto msgName = xml->Attribute("NAME", nullptr);
-    if (msgName == nullptr)
-    {
-      msgName = xml->Attribute("name");
-      if (msgName == nullptr)
-      {
-        throw bad_message_file("No name for message");
-      }
-      name = msgName;
-    }
-    int msgId = xml->IntAttribute("ID", -1);
-    if (msgId == -1)
-    {
-      msgId = xml->IntAttribute("id");
-    }
-    id = (uint8_t) msgId;
-    auto field = xml->FirstChildElement("field");
-    while (field != nullptr)
-    {
-      auto fieldName = field->Attribute("NAME", nullptr);
-      if (fieldName == nullptr)
-      {
-        fieldName = field->Attribute("name", nullptr);
-        if (fieldName == nullptr)
-        {
-          throw bad_message_file("Bad field");
+    if (classId < 0 || classId > 15) throw bad_message_file("Class ID must be in [0, 15]");
+    this->classId = static_cast<uint8_t>(classId);
+    const auto &message = detail::xml::element(xml, "message");
+    name = detail::xml::attribute(message, "name", "NAME");
+    try {
+      id = static_cast<uint8_t>(detail::xml::id(message, 255));
+      for (auto field = message.FirstChildElement("field"); field;
+           field = field->NextSiblingElement("field")) {
+        const auto fieldName = detail::xml::attribute(*field, "name", "NAME");
+        try {
+          const auto type = detail::xml::attribute(*field, "type", "TYPE");
+          if (!fieldNameToIndex.emplace(fieldName, fields.size()).second) {
+            throw bad_message_file("Duplicate field name");
+          }
+          fields.emplace_back(fieldName, type);
+        } catch (const bad_message_file &error) {
+          throw bad_message_file(std::format("field '{}': {}", fieldName, error.what()));
         }
       }
-      auto fieldTypeStr = field->Attribute("TYPE", nullptr);
-      if (fieldTypeStr == nullptr)
-      {
-        fieldTypeStr = field->Attribute("type", nullptr);
-        if (fieldTypeStr == nullptr)
-        {
-          throw bad_message_file("Bad field");
-        }
-      }
-      if (fieldName == nullptr || fieldTypeStr == nullptr)
-      {
-        throw bad_message_file("Bad field");
-      }
-      MessageField msgField(fieldName, fieldTypeStr);
-
-      fieldNameToIndex[fieldName] = fields.size();
-      fields.push_back(msgField);
-
-      field = field->NextSiblingElement("field");
+    } catch (const bad_message_file &error) {
+      throw bad_message_file(std::format("message '{}': {}", name, error.what()));
     }
   }
 
@@ -101,16 +67,20 @@ namespace pprzlink {
     return name;
   }
 
-  const MessageField &MessageDefinition::getField(int index) const
+  const MessageField &MessageDefinition::getField(size_t index) const
   {
+    if (index >= fields.size()) {
+      throw no_such_field(std::format("No field at index {} in message {}", index, name));
+    }
     return fields[index];
   }
 
   const MessageField &MessageDefinition::getField(const std::string &name) const
   {
-    auto found =fieldNameToIndex.find(name);
-    if (found==fieldNameToIndex.end())
-      throw no_such_field("No field "+name+" in message "+getName());
+    const auto found = fieldNameToIndex.find(name);
+    if (found == fieldNameToIndex.end()) {
+      throw no_such_field(std::format("No field {} in message {}", name, getName()));
+    }
     return fields[found->second];
   }
 
@@ -121,39 +91,29 @@ namespace pprzlink {
 
   bool MessageDefinition::hasFieldName(const std::string &name) const
   {
-    return fieldNameToIndex.find(name)!=fieldNameToIndex.end();
+    return fieldNameToIndex.contains(name);
   }
 
   std::string MessageDefinition::toString() const
   {
-
-    std::stringstream sstr;
-    sstr << getName() << "("<< (int)getId() << ") in class " << (int)getClassId() << std::endl;
-    for (size_t i=0;i<getNbFields();++i)
-    {
-      sstr << "\t" << getField(i).getName() << " : " << getField(i).getType().toString() << std::endl;
+    auto text = std::format("{}({}) in class {}\n", name, id, classId);
+    for (const auto &field : fields) {
+      text += std::format("\t{} : {}\n", field.getName(), field.getType().toString());
     }
-
-    return sstr.str();
+    return text;
   }
 
   size_t MessageDefinition::getMinimumSize() const
   {
-    int size=0;
-    for (auto field: fields)
-    {
-        size+=field.getSize();
+    size_t size = 0;
+    for (const auto &field : fields) {
+      size += field.getSize();
     }
     return size;
   }
 
   bool MessageDefinition::isRequest() const
   {
-      std::string req = "_REQ";
-      if (name.length() >= req.length()) {
-          return (0 == name.compare (name.length() - req.length(), req.length(), req));
-      } else {
-          return false;
-      }
+    return name.ends_with("_REQ");
   }
 }

@@ -17,51 +17,47 @@
  *
  */
 
-/** \file Transport.h
- *
- *
- */
-
 #ifndef PPRZLINKCPP_TRANSPORT_H
 #define PPRZLINKCPP_TRANSPORT_H
-
 
 #include "Message.h"
 #include "Device.h"
 #include "MessageDictionary.h"
 #include <memory>
-#include <type_traits>
+#include <stdexcept>
+#include <utility>
 
 namespace pprzlink {
+  /// Owns its device exclusively; the borrowed dictionary must outlive the transport.
+  /// Calls on the same transport must be serialized by the application.
   class Transport {
   public:
-    explicit Transport(Device *device, const MessageDictionary &dictionary) : device(device), dictionary(dictionary)
-    {}
-
-    virtual bool hasMessage() =0;
-
-    virtual std::unique_ptr<Message> getMessage()  = 0;
-
-    /**
-     *
-     * @param msg
-     * @return the number of bytes actually sent on the device
-     */
-    virtual size_t sendMessage(Message const & msg) = 0;
-
-    Device *getDevice() const
+    explicit Transport(std::unique_ptr<Device> device, const MessageDictionary &dictionary)
+      : device(std::move(device)), dictionary(dictionary)
     {
-      return device;
+      if (!this->device) throw std::invalid_argument("Transport requires a device");
     }
 
-    void setDevice(Device *dev)
-    {
-      Transport::device = dev;
-    }
+    virtual ~Transport() = default;
+    Transport(const Transport&) = delete;
+    Transport& operator=(const Transport&) = delete;
+    Transport(Transport&&) = delete;
+    Transport& operator=(Transport&&) = delete;
+
+    virtual bool hasMessage() = 0;
+
+    virtual std::unique_ptr<Message> getMessage() = 0;
+
+    /// Write a complete message and return the number of bytes sent, or throw.
+    virtual size_t sendMessage(const Message &msg) = 0;
+
+    /// Borrow the device until transport destruction; never delete it or transfer ownership.
+    [[nodiscard]] Device& getDevice() noexcept { return *device; }
+    [[nodiscard]] const Device& getDevice() const noexcept { return *device; }
 
   protected:
-    Device * device;
+    std::unique_ptr<Device> device;
     const MessageDictionary &dictionary;
   };
 }
-#endif //PPRZLINKCPP_TRANSPORT_H
+#endif // PPRZLINKCPP_TRANSPORT_H

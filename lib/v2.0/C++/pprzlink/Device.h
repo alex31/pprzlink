@@ -17,42 +17,36 @@
  *
  */
 
-/** \file Device.h
- *
- *
- */
-
 #ifndef PPRZLINKCPP_DEVICE_H
 #define PPRZLINKCPP_DEVICE_H
 
 #include <cstdint>
-#include <functional>
-#include <deque>
-
-/*
-using check_free_space_t = std::function<int(void *, long *, uint16_t)>;
-using put_byte_t = std::function<void(void *, long, uint8_t)>;
-using put_buffer_t = std::function<void(void *, long, const uint8_t *, uint16_t)>;
-using send_message_t = std::function<void(void *, long)>;
-using char_available_t = std::function<int(void *)>;
-using get_byte_t = std::function<uint8_t(void *)>;
-using set_baudrate_t = std::function<void (void *, uint32_t baudrate)>;
-*/
+#include <cstddef>
+#include <vector>
 
 namespace pprzlink {
 
   using BytesBuffer = std::vector<uint8_t>;
 
-  /**
-   *
-   */
+  /// Byte stream used by a transport. Implementations define their threading contract.
   class Device {
   public:
+    virtual ~Device() = default;
     virtual size_t availableBytes() = 0;
 
+    /// Consume the bytes currently available; an empty buffer means no data yet.
     virtual BytesBuffer readAll() = 0;
 
-    virtual void writeBuffer(BytesBuffer const &data) = 0;
+    /// Write the entire buffer or throw. On failure some bytes may already be sent.
+    virtual void writeBuffer(const BytesBuffer &data) = 0;
+  };
+
+  /// Byte stream whose UART rate can be changed during modem initialization.
+  class SerialDevice : public Device {
+  public:
+    /// Set the host baud rate and discard buffered/in-flight input from the old rate.
+    /// The caller must own the dialogue and drain any stale input before sending commands.
+    virtual void resetBaudrate(unsigned int baudrate) = 0;
   };
 }
-#endif //PPRZLINKCPP_DEVICE_H
+#endif // PPRZLINKCPP_DEVICE_H

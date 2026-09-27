@@ -17,15 +17,11 @@
  *
  */
 
-/** \file MessageFieldTypes.h
- *
- *
- */
-
 #ifndef PPRZLINKCPP_MESSAGEFIELDTYPES_H
 #define PPRZLINKCPP_MESSAGEFIELDTYPES_H
 
 #include <string>
+#include <optional>
 
 namespace pprzlink {
 
@@ -45,21 +41,23 @@ namespace pprzlink {
 
   size_t sizeofBaseType(BaseType type);
 
+  /// An XML type (e.g. float, int16[] or char[5]), without a field name or value.
   class FieldType {
   public:
-    explicit FieldType(std::string const &typeString);
+    explicit FieldType(const std::string &typeString);
 
     [[nodiscard]] BaseType getBaseType() const;
 
     [[nodiscard]] bool isArray() const;
 
+    /// Zero denotes a dynamic array; calling this on a scalar throws logic_error.
     [[nodiscard]] size_t getArraySize() const;
 
     [[nodiscard]] std::string toString() const;
 
   private:
     BaseType baseType;
-    int arraySize; // 0 for dynamic, -1 for not an array
+    std::optional<size_t> arraySize; // nullopt: scalar; 0: dynamic; positive: fixed.
   };
 }
-#endif //PPRZLINKCPP_MESSAGEFIELDTYPES_H
+#endif // PPRZLINKCPP_MESSAGEFIELDTYPES_H
