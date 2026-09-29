@@ -195,6 +195,7 @@ let rec string_of_value = function
   | Int64 x -> Int64.to_string x
   | Char c -> String.make 1 c
   | String s -> s
+  | Array [||] -> "\"\""
   | Array a ->
       let l = (Array.to_list (Array.map string_of_value a)) in
       match a.(0) with
@@ -211,10 +212,11 @@ let rec formatted_string_of_value = fun format v ->
     | Int64 x -> sprintf (f "%Ld") x
     | Char x -> sprintf (f "%c") x
     | String x -> 
-      if String.contains x ' ' then
+      if x = "" || String.contains x ' ' || String.contains x '\t' then
         sprintf "\"%s\"" x
       else
         sprintf "%s" x
+    | Array [||] -> "\"\""
     | Array a ->
         let l = (Array.to_list (Array.map (formatted_string_of_value format) a)) in
         match a.(0) with
@@ -481,13 +483,14 @@ let rec sprint_value = fun buf i _type v ->
           failwith (sprintf "Value too large to fit in a uint8: %d" x);
         Bytes.set buf i (Char.chr x); sizeof _type
     | Scalar "int8", Int x ->
-        if x < -0x7f || x > 0x7f then
+        if x < -0x80 || x > 0x7f then
           failwith (sprintf "Value too large to fit in a int8: %d" x);
           sprint_int8 buf i x; sizeof _type
     | Scalar "float", Float f -> sprint_float buf i f; sizeof _type
     | Scalar "double", Float f -> sprint_double buf i f; sizeof _type
     | Scalar "int32", Int32 x -> sprint_int32 buf i x; sizeof _type
-    | Scalar ("int64"|"uint64"|"uint32"), Int64 x -> sprint_int64 buf i x; sizeof _type
+    | Scalar "uint32", Int64 x -> sprint_int32 buf i (Int64.to_int32 x); sizeof _type
+    | Scalar ("int64"|"uint64"), Int64 x -> sprint_int64 buf i x; sizeof _type
     | Scalar "int16", Int x -> sprint_int16 buf i x; sizeof _type
     | Scalar ("int32" | "uint32"), Int value ->
         assert (_type <> Scalar "uint32" || value >= 0);
@@ -729,6 +732,7 @@ module MessagesOfXml(Class:CLASS_Xml) = struct
     let rec loop = fun fields ->
       match fields with
       | [] -> []
+      | (Str.Delim "\"")::(Str.Delim "\"")::xs | (Str.Delim "|")::(Str.Delim "|")::xs -> "" :: loop xs
       | (Str.Delim "\"")::((Str.Text l)::[Str.Delim "\""]) | (Str.Delim "|")::((Str.Text l)::[Str.Delim "|"]) -> [l]
       | (Str.Delim "\"")::((Str.Text l)::((Str.Delim "\"")::xs)) | (Str.Delim "|")::((Str.Text l)::((Str.Delim "|")::xs)) -> [l] @ (loop xs)
       | [Str.Text x] -> Str.split space x
