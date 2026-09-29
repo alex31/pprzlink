@@ -32,6 +32,11 @@ namespace pprzlink::ivy_codec {
   std::string messageRegexp(const MessageDefinition &definition);
   /// Sender, message name and fields in Ivy wire format.
   std::string serializeMessage(const Message &message);
+  /// OCaml-compatible XML display formats, including its unquoted empty strings.
+  std::string serializeLegacyMessage(const Message &message);
+  /// OCaml-style whitespace and quoted/pipe-delimited fields; numeric values remain checked.
+  Message parseLegacyMessageBody(const MessageDefinition &definition, std::string_view sender,
+                                std::string_view body);
   /// Decode captures supplied by a dynamic Ivy binding.
   Message parseFields(const MessageDefinition &definition, std::string_view sender,
                       std::span<const std::string_view> fields);

@@ -1,0 +1,15 @@
+function(add_pprzlink_example target source component)
+    add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE pprzlink::${component})
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+    # Preserve the existing build-tree paths for the diagnostic examples.
+    set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+endfunction()
+
+add_pprzlink_example(serial_messages SerialMessages.cpp io)
+add_pprzlink_example(serial_aircraft clients/SerialAircraft.cpp io)
+add_pprzlink_example(udp_recorder clients/UdpRecorder.cpp io)
+if(PPRZLINK_WITH_IVY)
+    add_pprzlink_example(ivy_round_trip IvyRoundTrip.cpp ivy)
+    add_pprzlink_example(ivy_receiver clients/IvyReceiver.cpp ivy)
+endif()

@@ -52,7 +52,7 @@ int main(int argc, char **argv)
     auto reception = received.get_future();
     const auto receiverName = "example-receiver-" + suffix;
     pprzlink::IvyLink receiver(dictionary, receiverName, domain, true);
-    receiver.BindMessage(definition, [&](std::string, pprzlink::Message message) {
+    auto subscription = receiver.subscribeMessage(definition, [&](std::string, pprzlink::Message message) {
       received.set_value(std::move(message));
     });
 

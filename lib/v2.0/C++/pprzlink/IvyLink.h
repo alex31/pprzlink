@@ -30,6 +30,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace pprzlink {
 
@@ -54,6 +55,16 @@ namespace pprzlink {
     IvyLink& operator=(const IvyLink&) = delete;
     IvyLink(IvyLink&&) = delete;
     IvyLink& operator=(IvyLink&&) = delete;
+
+    /// Keep the returned Ivy token alive; destruction unsubscribes automatically.
+    /// Callbacks execute on the Ivy loop, as for the legacy binding methods.
+    /// Unbinding does not wait for a callback already executing. Captured application
+    /// state must remain alive until that invocation finishes.
+    [[nodiscard]] ivy::Subscription subscribeMessage(const MessageDefinition &definition, messageCallback_t callback);
+    [[nodiscard]] ivy::Subscription subscribeMessage(std::string_view name, messageCallback_t callback);
+    [[nodiscard]] ivy::Subscription subscribeSender(std::string sender, messageCallback_t callback);
+    [[nodiscard]] ivy::Subscription subscribeRequestAnswerer(const MessageDefinition &definition,
+                                                            answererCallback_t callback);
 
     long BindMessage(const MessageDefinition &def, messageCallback_t cb);
 
@@ -82,7 +93,7 @@ namespace pprzlink {
     // Declared last: stop/join before destroying subscriptions or the bus.
     std::optional<ivy::LoopThread> loop;
 
-    long storeSubscription(ivy::Bus::BindResult result);
+    long storeSubscription(ivy::Subscription subscription);
     void storeSubscription(long id, ivy::Bus::BindResult result);
   };
 }

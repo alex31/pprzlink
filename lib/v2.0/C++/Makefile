@@ -20,43 +20,60 @@
 #
 
 PKG_CONFIG ?= pkg-config
+WITH_IVY ?= 1
 
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 current_dir := $(dir $(mkfile_path))
 INCLUDE_DIR=$(DESTDIR)/include
 LIB_DIR=$(DESTDIR)/lib
 OBJ_DIR ?= $(CURDIR)/build/C++
+CONFIG_STAMP = $(OBJ_DIR)/.with-ivy
 
 PPRZLINK_HEADERS=$(wildcard pprzlink/*.h)
 PPRZLINK_SRC=$(wildcard pprzlink/*.cpp)
+ifeq ($(WITH_IVY),0)
+PPRZLINK_HEADERS:=$(filter-out pprzlink/IvyLink.h,$(PPRZLINK_HEADERS))
+PPRZLINK_SRC:=$(filter-out pprzlink/IvyLink.cpp,$(PPRZLINK_SRC))
+DEPENDENCIES=tinyxml2
+else
+DEPENDENCIES='ivy-cpp >= 3.18' tinyxml2
+endif
 PPRZLINK_OBJS=$(patsubst %.cpp,$(OBJ_DIR)/%.o,$(PPRZLINK_SRC))
 
-IVY_CFLAGS = $(shell $(PKG_CONFIG) --cflags 'ivy-cpp >= 3.18' tinyxml2)
-IVY_LIBS = $(shell $(PKG_CONFIG) --libs 'ivy-cpp >= 3.18' tinyxml2)
+DEP_CFLAGS = $(shell $(PKG_CONFIG) --cflags $(DEPENDENCIES))
+DEP_LIBS = $(shell $(PKG_CONFIG) --libs $(DEPENDENCIES))
 
-.PHONY: all libpprzlink++ install check-deps
+.PHONY: all libpprzlink++ install check-deps FORCE
 all: libpprzlink++
 
+FORCE:
+
+$(CONFIG_STAMP): FORCE
+	@mkdir -p $(OBJ_DIR)
+	@if ! test -f "$@" || ! test "$$(cat "$@")" = "$(WITH_IVY)"; then printf '%s\n' '$(WITH_IVY)' > "$@"; fi
+
 check-deps:
-	$(PKG_CONFIG) --print-errors --exists 'ivy-cpp >= 3.18' tinyxml2
+	$(PKG_CONFIG) --print-errors --exists $(DEPENDENCIES)
 
 $(OBJ_DIR)/%.o: %.cpp | check-deps
 	@mkdir -p $(dir $@)
-	$(CXX) $(CPPFLAGS) -I$(current_dir) $(IVY_CFLAGS) $(CXXFLAGS) -std=c++23 -Wall -Wextra -fPIC -pthread -MMD -MP -c $< -o $@
+	$(CXX) $(CPPFLAGS) -I$(current_dir) $(DEP_CFLAGS) $(CXXFLAGS) -std=c++23 -Wall -Wextra -fPIC -pthread -MMD -MP -c $< -o $@
 
 libpprzlink++: $(OBJ_DIR)/libpprzlink++.so $(OBJ_DIR)/libpprzlink++.a
 
-$(OBJ_DIR)/libpprzlink++.so: $(PPRZLINK_OBJS)
-	$(CXX) $(LDFLAGS) -shared -o $@ $^ $(LDLIBS) $(IVY_LIBS) -pthread
+$(OBJ_DIR)/libpprzlink++.so: $(PPRZLINK_OBJS) $(CONFIG_STAMP)
+	$(CXX) $(LDFLAGS) -shared -o $@ $(PPRZLINK_OBJS) $(LDLIBS) $(DEP_LIBS) -pthread
 
-$(OBJ_DIR)/libpprzlink++.a: $(PPRZLINK_OBJS)
+$(OBJ_DIR)/libpprzlink++.a: $(PPRZLINK_OBJS) $(CONFIG_STAMP)
 	rm -f $@
-	$(AR) rcs $@ $^
+	$(AR) rcs $@ $(PPRZLINK_OBJS)
 
 install: libpprzlink++
 	mkdir -p $(INCLUDE_DIR)/pprzlink $(LIB_DIR)
 	cp $(PPRZLINK_HEADERS) $(INCLUDE_DIR)/pprzlink
 	cp -R pprzlink/exceptions $(INCLUDE_DIR)/pprzlink
+	mkdir -p $(INCLUDE_DIR)/pprzlink/detail
+	cp pprzlink/detail/CheckedNumber.h $(INCLUDE_DIR)/pprzlink/detail
 	cp $(OBJ_DIR)/libpprzlink++.* $(LIB_DIR)
 
 -include $(PPRZLINK_OBJS:.o=.d)

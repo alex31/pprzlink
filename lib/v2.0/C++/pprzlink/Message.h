@@ -40,6 +40,13 @@ namespace pprzlink {
     template<class ValueType>
     void addField(const std::string &name, ValueType value)
     {
+      setField(name, std::move(value));
+    }
+
+    /// Set or replace a field. Invalid input leaves the previous value unchanged.
+    template<class ValueType>
+    void setField(const std::string &name, ValueType value)
+    {
       const auto &field = def.getField(name);
       fieldValues.insert_or_assign(name, FieldValue(field, value));
     }
@@ -68,6 +75,19 @@ namespace pprzlink {
     [[nodiscard]] ValueType getField(size_t index) const
     {
       return getField<ValueType>(def.getField(index).getName());
+    }
+
+    /// Request an explicit checked numeric conversion instead of an exact-type read.
+    template<Arithmetic ValueType>
+    [[nodiscard]] ValueType getFieldAs(const std::string &name) const
+    {
+      return fieldWithValue(name).getValueAs<ValueType>();
+    }
+
+    template<Arithmetic ValueType>
+    [[nodiscard]] ValueType getFieldAs(size_t index) const
+    {
+      return getFieldAs<ValueType>(def.getField(index).getName());
     }
 
     /// Read the XML-selected variant without copying. Do not retain the reference
@@ -101,6 +121,26 @@ namespace pprzlink {
     void setSenderId(const SenderId &senderId);
     void setReceiverId(uint8_t receiverId);
     void setComponentId(uint8_t componentId);
+
+    /// Numeric header IDs use the same checked conversion as numeric fields.
+    /// String sender names remain available for Ivy through the SenderId overload.
+    template<Arithmetic ValueType>
+    void setSenderId(ValueType senderId)
+    {
+      setSenderId(SenderId{detail::checkedNumber<uint8_t>(senderId, "sender_id")});
+    }
+
+    template<Arithmetic ValueType> requires (!std::same_as<ValueType, uint8_t>)
+    void setReceiverId(ValueType receiverId)
+    {
+      setReceiverId(detail::checkedNumber<uint8_t>(receiverId, "receiver_id"));
+    }
+
+    template<Arithmetic ValueType> requires (!std::same_as<ValueType, uint8_t>)
+    void setComponentId(ValueType componentId)
+    {
+      setComponentId(detail::checkedNumber<uint8_t>(componentId, "component_id"));
+    }
 
     /// Binary payload size; all fields must have values.
     size_t getByteSize() const;

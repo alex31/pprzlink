@@ -52,7 +52,10 @@ namespace pprzlink::ivy_codec {
     template<class T>
     T parseNumber(std::string_view text)
     {
-      const auto original = text;
+      const std::string original(text);
+      std::string normalized(text);
+      std::erase(normalized, '_');
+      text = normalized;
       if (text.starts_with('+')) {
         text.remove_prefix(1);
         if (text.starts_with('-')) {
@@ -60,6 +63,27 @@ namespace pprzlink::ivy_codec {
         }
       }
       T value{};
+      int base = 10;
+      bool negative = false;
+      if constexpr (std::integral<T>) {
+        if (text.starts_with('-')) { negative = true; text.remove_prefix(1); }
+        if (text.starts_with("0x") || text.starts_with("0X")) base = 16;
+        else if (text.starts_with("0o") || text.starts_with("0O")) base = 8;
+        else if (text.starts_with("0b") || text.starts_with("0B")) base = 2;
+        if (base != 10) text.remove_prefix(2);
+        uint64_t magnitude = 0;
+        const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), magnitude, base);
+        const uint64_t limit = static_cast<uint64_t>(std::numeric_limits<T>::max()) +
+          (negative && std::is_signed_v<T> ? uint64_t{1} : uint64_t{0});
+        if (text.empty() || error != std::errc{} || end != text.data() + text.size() ||
+            magnitude > limit || (negative && !std::is_signed_v<T>))
+          throw wrong_message_format("Invalid or out-of-range number: " + original);
+        if (negative) {
+          if (magnitude == limit) return std::numeric_limits<T>::min();
+          return static_cast<T>(-static_cast<int64_t>(magnitude));
+        }
+        return static_cast<T>(magnitude);
+      }
       const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
       if (text.empty() || result.ec != std::errc{} || result.ptr != text.data() + text.size()) {
         throw wrong_message_format("Invalid or out-of-range number: " + std::string(original));
@@ -102,9 +126,11 @@ namespace pprzlink::ivy_codec {
       {BaseType::INT8, "[+-]?[0-9]+"},
       {BaseType::INT16, "[+-]?[0-9]+"},
       {BaseType::INT32, "[+-]?[0-9]+"},
+      {BaseType::INT64, "[+-]?[0-9]+"},
       {BaseType::UINT8, "[+]?[0-9]+"},
       {BaseType::UINT16, "[+]?[0-9]+"},
       {BaseType::UINT32, "[+]?[0-9]+"},
+      {BaseType::UINT64, "[+]?[0-9]+"},
       {BaseType::FLOAT, R"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"},
       {BaseType::DOUBLE, R"([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"},
       {BaseType::STRING, R"((?:"[^"]*"|[^ ]+))"}
@@ -177,9 +203,11 @@ namespace pprzlink::ivy_codec {
         case BaseType::INT8: addNumericField<int8_t>(msg, field, text); break;
         case BaseType::INT16: addNumericField<int16_t>(msg, field, text); break;
         case BaseType::INT32: addNumericField<int32_t>(msg, field, text); break;
+        case BaseType::INT64: addNumericField<int64_t>(msg, field, text); break;
         case BaseType::UINT8: addNumericField<uint8_t>(msg, field, text); break;
         case BaseType::UINT16: addNumericField<uint16_t>(msg, field, text); break;
         case BaseType::UINT32: addNumericField<uint32_t>(msg, field, text); break;
+        case BaseType::UINT64: addNumericField<uint64_t>(msg, field, text); break;
         case BaseType::FLOAT: addNumericField<float>(msg, field, text); break;
         case BaseType::DOUBLE: addNumericField<double>(msg, field, text); break;
         case BaseType::NOT_A_TYPE:

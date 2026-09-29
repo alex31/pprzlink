@@ -1,16 +1,23 @@
 # PprzLink C++
 
-The C++ library requires C++23, Ivy **3.18 or newer** with its native C++ wrapper
-(`ivy-cpp`), TinyXML2, Boost (Asio and Bimap), CMake 3.20+ and pkg-config.
-Ubuntu 24.04 / GCC 13 is the intended minimum platform; GCC 15 is used for the
-current validation. Ubuntu 22.04 is no longer targeted.
+The C++ library requires C++23, TinyXML2, Boost (Asio and Bimap) and CMake 3.20+.
+The default build also includes Ivy **3.18 or newer** with its native C++ wrapper
+(`ivy-cpp`) and pkg-config. Set `PPRZLINK_WITH_IVY=OFF` to build without Ivy.
+Ubuntu 24.04 / GCC 13 is the minimum supported platform. The current sources
+have been built and tested with Ubuntu 24.04's GCC 13.3 and official Noble
+dependencies; see [the validation report](VALIDATION_UBUNTU24_GCC13.md).
+Earlier validation also covers GCC 15. Ubuntu 22.04 is no longer targeted.
 For sharing this branch, use [Ivy 3.18.3](https://github.com/alex31/libivy-c/commit/b0bf831702c5bfd1313e83ded62eb14d17198534),
 which includes the cleanup, threading and context-ownership changes validated
 with this library.
 
-The serial device remains part of both library builds. It uses
+The serial device remains part of both aggregate library builds and the `io` component. It uses
 `boost::asio::io_context` (the type previously aliased as `io_service`).
 Boost.System is header-only with the supported Boost versions.
+
+Start with the [public API examples and their usability notes](API_USAGE.md)
+for Ivy reception, an aircraft serial peer, or a UDP recorder. The examples can
+also be built as an independent project against the installed SDK.
 
 ## Class roles
 
@@ -31,6 +38,9 @@ For example, `MessageField("altitude", "float")` describes a field, while its
 | [`XbeeTransport`](pprzlink/XbeeTransport.h) | Carry PprzLink v2 messages in XBee 802.15.4 API frames (AP=1), with radio addressing, status events and optional transmit validation. |
 | [`XbeeModem`](pprzlink/XbeeModem.h) | Initialize the modem through AT commands, with guard times, checked replies and response deadlines. |
 | [`BoostSerialPortDevice`](pprzlink/BoostSerialPortDevice.h) | Implement the `Device` byte-stream interface with Boost.Asio serial I/O. |
+| [`PprzFrameDecoder`](pprzlink/PprzFrameCodec.h) | Decode PPRZ frames without owning a device or performing I/O. |
+| [`UdpTransport`](pprzlink/UdpTransport.h) | Send PPRZ datagrams and return messages with their source IP/port. |
+| [`ReceivedMessage`](pprzlink/ReceivedMessage.h) | Own a message, its complete frame size and optional XBee/UDP metadata. |
 | [`BinaryCodec`](pprzlink/BinaryCodec.h), [`IvyMessageCodec`](pprzlink/IvyMessageCodec.h), [`TextCodec`](pprzlink/TextCodec.h) | Convert messages/fields to and from bytes or text; these functions perform no device or bus I/O. |
 
 The usual path is XML → dictionary → definition → populated message → Ivy link
@@ -63,17 +73,121 @@ export LD_LIBRARY_PATH="$IVY_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
 The build rejects Ivy versions below 3.18. Ensure pkg-config and the runtime
-loader select the same installation. Instructions for building the Ivy packages
+loader select the same installation. Rebuild the Ivy C++ wrapper with the
+application's compiler when switching toolchains: the GCC 13 and GCC 16 checks
+required matching builds, as recorded in the comparison report.
+Instructions for building the Ivy packages
 are in [Ivy's Debian README](https://github.com/alex31/libivy-c/blob/b0bf831702c5bfd1313e83ded62eb14d17198534/debian/README).
 Validation results and limitations are recorded in
-[VALIDATION_CLANG22.md](pprzlink/VALIDATION_CLANG22.md); its temporary paths are
-historical logs from the development machine, not build prerequisites.
+[VALIDATION_UBUNTU24_GCC13.md](VALIDATION_UBUNTU24_GCC13.md) and the earlier
+[VALIDATION_CLANG22.md](pprzlink/VALIDATION_CLANG22.md). Their temporary paths are
+validation logs, not build prerequisites.
+
+To check the minimum compiler explicitly, use a fresh build directory:
+
+```sh
+cmake -S . -B build-gcc13 -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 \
+  -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-gcc13 -j4
+ctest --test-dir build-gcc13 --output-on-failure
+```
+
+The [step-by-step link replacement guide](LINK_CPP_PLAN.md) tracks the ground
+agent implementation and its remaining hardware validation. See also the
+[OCaml/C++ comparison report](LINK_CPP_VALIDATION.md). `serial_messages` remains
+a separate diagnostic tool.
 
 `make libpprzlink++` and `make install DESTDIR=/path/to/install` are also supported.
 Use the same `PKG_CONFIG_PATH`; `CXX`, `CPPFLAGS`, `CXXFLAGS`, `LDFLAGS`, and
 `OBJ_DIR` may be supplied to make. Both shared and static libraries are built.
 Installed CMake consumers can use `find_package(pprzlink++ CONFIG REQUIRED)` and
 link `pprzlink++` or `pprzlink++_static`; dependencies and C++23 propagate.
+
+New consumers can select `COMPONENTS core`, `io` or `ivy` and link
+`pprzlink::core`, `pprzlink::io` or `pprzlink::ivy`. The component libraries are
+static/PIC. Selecting `core` or `io` does not look for Ivy, even with a full SDK.
+The default `find_package` call retains the historical aggregate targets.
+The Makefile also supports `WITH_IVY=0`; see [API_USAGE.md](API_USAGE.md) for the
+complete build and installed-consumer examples.
+
+## Ground agent: link++
+
+On Unix, the default CMake build also creates `apps/link/link++`. It accepts
+all 24 options of Paparazzi's OCaml `link`, plus its `-help`/`--help` switches.
+Defaults match OCaml, including **9600 baud**, uplink enabled, UDP ports
+4242/4243, aircraft timeout 5000 ms, PING period 5000 ms and report period 1000 ms.
+
+```sh
+export PAPARAZZI_HOME=/path/to/paparazzi
+./build-gcc13/apps/link/link++ -d /dev/ttyUSB0 -s 57600 -transport pprz
+./build-gcc13/apps/link/link++ -udp -udp_port 4242 -udp_uplink_port 4243
+./build-gcc13/apps/link/link++ -help
+```
+
+The message file is `$PPRZLINK_DIR/messages.xml`, otherwise
+`$PAPARAZZI_HOME/var/messages.xml`, otherwise `/usr/share/pprzlink/messages.xml`.
+`IVY_BUS` supplies the default bus; `-b` overrides it. No new mandatory option
+is needed. Disable the executable with `-DPPRZLINK_BUILD_LINK=OFF` when building
+only the library.
+
+The agent bridges telemetry to Ivy, routes XML `forwarded`/`broadcasted` commands,
+tracks known aircraft, sends PING, receives PONG and publishes LINK_REPORT. It
+supports serial PPRZ/XBee, file/FIFO descriptors, UDP with per-aircraft peers,
+traffic output, local timestamps and redundant-link telemetry encapsulation.
+
+Unlike the diagnostic example, the compatible XBee launch uses a fixed baudrate
+and does **not** change or save the modem's baudrate. AT replies and deadlines
+are still checked. Host retries preserve the frame ID; `-xbee_retries` sets the
+maximum total attempts, including the first send. Pending IDs are not reused;
+a missing status expires after five seconds without blindly resending a command.
+
+`-xbee_868` selects AP=1 TX 0x10, RX 0x90 and status 0x8b frames. This framing is
+covered by fixtures and a simulated modem; physical 868 modem configuration and
+delivery have not been validated. See the comparison report for the corrected
+OCaml 868 transmit-type bug and other intentional differences.
+
+The application source is in [`apps/link`](apps/link). `Options` handles the CLI;
+`IvyBridge` transfers incoming commands to the Asio loop; `AircraftRegistry`
+owns liveness/accounting; the library's `UdpTransport` preserves datagram origins;
+`XbeeTransmitter` owns outstanding sends and retries; `LinkAgent` connects these
+components. Application state and radio I/O run on one Asio loop. The Ivy thread
+is stopped and joined before that state is destroyed.
+
+Library additions used by the agent:
+
+- `MessageDefinition::getLinkMode()` and `MessageField::getFormat()` expose XML
+  routing/display metadata.
+- `serializeLegacyMessage()` honors XML display formats. The existing
+  `serializeMessage()` output is unchanged. `parseLegacyMessageBody()` accepts
+  the legacy whitespace/quoted-field syntax while checking numeric ranges.
+- Signed/unsigned 64-bit scalar and array fields complement the existing types.
+- `PprzFrameDecoder` and `encodePprzFrame()` provide framing without device I/O.
+  `discardPendingInput()` keeps incomplete UDP datagrams from contaminating later ones.
+- Transports expose `getStatistics()` and `getLastReceivedFrameSize()`;
+  `PosixFileDevice` supplies the file/FIFO stream adapter.
+- `XbeeTransport::Api::Series868` selects the extended framing;
+  `sendMessageWithId()` lets an application track/retry a transmission explicitly.
+  RX 0x90 has no RSSI; check `ReceiveInfo::hasRssi` before using that value.
+
+These additions change the public C++ ABI, notably the field-value variant and
+message metadata. Rebuild all dependent applications.
+
+CTest runs the agent's protocol scenarios without hardware. To run the same
+scenarios against a real OCaml reference as well:
+
+```sh
+cmake -S . -B build-gcc13 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/g++-13 \
+  -DPPRZLINK_OCAML_REFERENCE=/path/to/link_ocaml
+cmake --build build-gcc13 -j4
+ctest --test-dir build-gcc13 --output-on-failure
+```
+
+[`build_ocaml_reference.py`](pprzlink/tests/build_ocaml_reference.py) builds an
+isolated reference from Paparazzi and Ivy OCaml sources. The comparison report
+documents its dependencies and exact invocation. The Ubuntu 24.04/GCC 13 CI
+workflow runs the independent agent scenarios; differential tests additionally
+require this OCaml executable.
 
 ## Complete example
 
@@ -139,10 +253,11 @@ PPRZ serial envelope**. This matches the non-868 OCaml XBee transport.
 The RF payload limit is 100 bytes including that four-byte header; larger
 messages are rejected before writing to the device. Messages are not fragmented.
 
-Supported radio format: **XBee 802.15.4 legacy API, AP=1 (without escaping)**,
+Default radio format: **XBee 802.15.4 legacy API, AP=1 (without escaping)**,
 TX16 `0x01`, TX64 `0x00`, RX16 `0x81`, RX64 `0x80`. A frequency of 2.4 GHz alone
-is not sufficient to identify compatible firmware: Zigbee/DigiMesh/868 API
-formats and AP=2 escaped mode are not implemented. On firmware with an `AO`
+is not sufficient to identify compatible firmware. The separate `Api::Series868`
+mode supplies 0x10/0x90/0x8b framing; it does not implement Zigbee/DigiMesh network
+management. AP=2 escaped mode is not implemented. On firmware with an `AO`
 setting, select legacy RX16/RX64 output as specified by that modem's manual.
 The PAN must already match the intended setup. Initialization assumes the default
 command escape character `+` and a modem supporting UART command mode. Adjust the
@@ -297,6 +412,13 @@ Existing `BindMessage`, `BindOnSrcAc`, `UnbindMessage`, `sendMessage`,
 `IvyApplicationCallback` inheritance and helper callback classes are removed.
 Binding IDs are opaque and local to each link.
 
+New code can use `subscribeMessage(definitionOrName, callback)`,
+`subscribeSender(sender, callback)` and `subscribeRequestAnswerer(definition, callback)`.
+They return Ivy's own move-only `ivy::Subscription`; retain it while subscribed,
+then let destruction unsubscribe or call `unbind()` explicitly. The legacy
+ID-based entry points delegate to the same implementation. Unbinding does not
+wait for a callback already executing; its captured state must remain alive.
+
 Message definitions and field types are loaded at runtime from XML. Reception
 uses `bind_raw`, then builds a `pprzlink::Message` from those definitions.
 `bind_convert` requires a fixed callback signature and is not used for this
@@ -310,7 +432,7 @@ bus address or separate addresses in one process:
 ```cpp
 pprzlink::IvyLink first(dictionary, "first", "127.255.255.255:2010", true);
 pprzlink::IvyLink second(dictionary, "second", "127.255.255.255:2011", true);
-first.BindMessage(dictionary.getDefinition("ALIVE"),
+auto aliveSubscription = first.subscribeMessage("ALIVE",
     [](std::string sender, pprzlink::Message message) {
         // Fields are decoded according to the XML definition.
     });
@@ -343,7 +465,7 @@ requests and sends, cancellation, independent bus shutdown and error reporting.
 
 `FieldValue` stores a `std::variant` of the supported scalar types and typed
 `std::vector` arrays. The XML definition selects the stored type; construction
-converts numeric inputs to that type and checks fixed array lengths. There is no
+checks numeric ranges and fixed array lengths before storing a value. There is no
 `std::any`, per-element type erasure or mutable formatting flag. Named C++
 concepts describe scalar, input-container and output-container overloads.
 
@@ -352,6 +474,7 @@ Returning getters complement the existing output-parameter API:
 ```cpp
 // For XML fields declared as float and int16[].
 auto altitude = message.getField<float>("altitude");
+auto convertedAltitude = message.getFieldAs<double>("altitude"); // Explicit checked conversion.
 auto samples = message.getField<std::vector<int16_t>>("samples");
 float previousStyle;
 message.getField("altitude", previousStyle); // Still supported.
@@ -374,8 +497,20 @@ and a defined field without a value throws `field_has_no_value`, as with the
 typed getters.
 
 Typed getters require the exact stored scalar/element type. A mismatch throws
-`std::bad_variant_access`; a `std::array` output must have exactly the stored
+`field_type_mismatch` (derived from `std::bad_variant_access`) with the field and
+type names; a `std::array` output must have exactly the stored
 number of elements, otherwise it throws `std::length_error`.
+
+`setField()` sets or replaces a field; `addField()` remains a compatible alias.
+Both reject out-of-range numeric inputs, including array elements, with
+`field_conversion_error` (derived from `std::out_of_range`). Fractional or
+non-finite floating-point values cannot become integers. An invalid replacement
+leaves the previous value unchanged. `getFieldAs<T>()` applies the same checks
+for explicit numeric scalar reads. Floating-point destinations may round;
+exact-type floating-point values, including NaNs, retain their binary semantics.
+Numeric sender/receiver/component setters also check the byte range, so ordinary
+integer literals work without silently wrapping; binary encoding still enforces
+the four-bit component limit. String Ivy sender names remain supported.
 
 `<pprzlink/TextCodec.h>` provides `writeIvyField(stream, field)` for the Ivy wire
 format and `writeDebugField(stream, field)` for diagnostics. Formatting visits
@@ -406,6 +541,18 @@ formatting and binary transport round trips. The field-value tests cover
 concepts, supported containers and numeric conversions.
 
 ## Transport, XML and serial-device contracts
+
+`tryReceive()` is the common receive operation for serial PPRZ, XBee, the PPRZ
+frame decoder and UDP. It returns `std::optional<ReceivedMessage>`: a value owns
+the message and its matching frame size/radio metadata/network source; `nullopt`
+means this poll produced no complete message. Errors still throw. The historical
+`hasMessage()`/`getMessage()` and last-metadata getters remain available.
+
+`UdpTransport` takes an external Asio context and a `UdpOptions` value with a
+local endpoint and broadcast setting. Its dictionary and context must outlive
+it; serialize its calls. Sends require an explicit `UdpEndpoint`. Received
+datagrams keep their source through all contained frames, including recovery
+after a malformed frame. Incomplete frames are discarded at datagram boundaries.
 
 The binary transport searches iteratively for valid frames, keeps incomplete
 frames, and discards noise, invalid lengths and bad checksums. A checksum-valid

@@ -34,6 +34,13 @@ namespace pprzlink {
     name = detail::xml::attribute(message, "name", "NAME");
     try {
       id = static_cast<uint8_t>(detail::xml::id(message, 255));
+      const char *link = message.Attribute("link");
+      if (!link) link = message.Attribute("LINK");
+      if (link) {
+        if (std::string_view(link) == "forwarded") linkMode = LinkMode::Forwarded;
+        else if (std::string_view(link) == "broadcasted") linkMode = LinkMode::Broadcasted;
+        else throw bad_message_file("Unknown link mode: " + std::string(link));
+      }
       for (auto field = message.FirstChildElement("field"); field;
            field = field->NextSiblingElement("field")) {
         const auto fieldName = detail::xml::attribute(*field, "name", "NAME");
@@ -42,7 +49,9 @@ namespace pprzlink {
           if (!fieldNameToIndex.emplace(fieldName, fields.size()).second) {
             throw bad_message_file("Duplicate field name");
           }
-          fields.emplace_back(fieldName, type);
+          const char *format = field->Attribute("format");
+          if (!format) format = field->Attribute("FORMAT");
+          fields.emplace_back(fieldName, type, format ? format : "");
         } catch (const bad_message_file &error) {
           throw bad_message_file(std::format("field '{}': {}", fieldName, error.what()));
         }

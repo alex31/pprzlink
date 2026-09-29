@@ -13,7 +13,7 @@ namespace pprzlink {
     constexpr uint8_t rx64 = 0x80, rx16 = 0x81;
     constexpr uint8_t atResponse = 0x88, txStatus = 0x89, modemStatus = 0x8a;
     constexpr size_t envelopeSize = 4; // Delimiter, two length bytes, checksum.
-    constexpr size_t maximumFrameDataSize = 11 + XbeeTransport::maximumRfPayloadSize;
+    constexpr size_t maximumFrameDataSize = 14 + XbeeTransport::maximumRfPayloadSize;
 
     uint8_t checksum(std::span<const uint8_t> data)
     {
@@ -27,7 +27,7 @@ namespace pprzlink {
       return (static_cast<size_t>(frame[1]) << 8) | frame[2];
     }
 
-    enum class FrameStatus { Incomplete, Invalid, Complete };
+    enum class FrameStatus { Incomplete, BadLength, BadChecksum, Complete };
 
     FrameStatus inspectFrame(std::span<const uint8_t> frame)
     {
@@ -35,9 +35,9 @@ namespace pprzlink {
       const auto size = frameDataSize(frame);
       // This transport handles legacy 802.15.4 frames with at most 100 RF bytes.
       // Reject corrupt lengths before waiting for/allocating a 64 KiB frame.
-      if (size == 0 || size > maximumFrameDataSize) return FrameStatus::Invalid;
+      if (size == 0 || size > maximumFrameDataSize) return FrameStatus::BadLength;
       if (frame.size() < size + envelopeSize) return FrameStatus::Incomplete;
-      if (checksum(frame.subspan(3, size)) != frame[3 + size]) return FrameStatus::Invalid;
+      if (checksum(frame.subspan(3, size)) != frame[3 + size]) return FrameStatus::BadChecksum;
       return FrameStatus::Complete;
     }
 
@@ -49,8 +49,8 @@ namespace pprzlink {
     }
   }
 
-  XbeeTransport::XbeeTransport(std::unique_ptr<Device> device, const MessageDictionary &dictionary)
-    : Transport(std::move(device), dictionary)
+  XbeeTransport::XbeeTransport(std::unique_ptr<Device> device, const MessageDictionary &dictionary, Api api)
+    : Transport(std::move(device), dictionary), api(api)
   {
     transportBuffer.reserve(maximumFrameDataSize + envelopeSize);
   }
@@ -72,11 +72,26 @@ namespace pprzlink {
   size_t XbeeTransport::sendMessage(const Message &message)
   {
     const uint16_t destination = message.getReceiverId() == 255 ? 0xffff : message.getReceiverId();
-    return sendMessageTo16(message, destination);
+    return api == Api::Series868 ? sendMessageTo64(message, destination)
+                                 : sendMessageTo16(message, destination);
+  }
+
+  std::optional<ReceivedMessage> XbeeTransport::tryReceive()
+  {
+    auto received = Transport::tryReceive();
+    if (received) received->xbee = receiveInfo;
+    return received;
+  }
+
+  size_t XbeeTransport::sendMessageWithId(const Message &message, uint8_t frameId)
+  {
+    const uint64_t destination = message.getReceiverId() == 255 ? 0xffff : message.getReceiverId();
+    return sendTo(message, destination, api == Api::Series868, frameId);
   }
 
   size_t XbeeTransport::sendMessageTo16(const Message &message, uint16_t destination)
   {
+    if (api == Api::Series868) throw std::invalid_argument("868 API requires 64-bit addressing");
     return sendTo(message, destination, false);
   }
 
@@ -85,17 +100,18 @@ namespace pprzlink {
     return sendTo(message, destination, true);
   }
 
-  size_t XbeeTransport::sendTo(const Message &message, uint64_t destination, bool addressIs64Bit)
+  size_t XbeeTransport::sendTo(const Message &message, uint64_t destination, bool addressIs64Bit, std::optional<uint8_t> requestedId)
   {
     if (!isReady()) throw std::logic_error("XBee initialization must succeed before sending messages");
     const auto payload = detail::encodeMessagePayload(message, maximumRfPayloadSize);
     const size_t addressSize = addressIs64Bit ? 8 : 2;
-    const size_t dataSize = 3 + addressSize + payload.size();
-    const uint8_t frameId = lastFrameId == 255 ? 1 : static_cast<uint8_t>(lastFrameId + 1);
+    const size_t dataSize = 3 + addressSize + payload.size() + (api == Api::Series868 ? 3 : 0);
+    const uint8_t frameId = requestedId.value_or(lastFrameId == 255 ? 1 : static_cast<uint8_t>(lastFrameId + 1));
     BytesBuffer frame{startByte, static_cast<uint8_t>(dataSize >> 8), static_cast<uint8_t>(dataSize),
-                      addressIs64Bit ? tx64 : tx16, frameId};
+                      api == Api::Series868 ? uint8_t{0x10} : (addressIs64Bit ? tx64 : tx16), frameId};
     frame.reserve(dataSize + envelopeSize);
     for (size_t i = addressSize; i > 0; --i) frame.push_back(static_cast<uint8_t>(destination >> (8 * (i - 1))));
+    if (api == Api::Series868) frame.insert(frame.end(), {0xff, 0xfe, 0x00});
     frame.push_back(0); // Normal transmission: enable the modem's acknowledgement/retry mechanism.
     // No 0x99/length/PPRZ checksum inside the XBee RF data.
     frame.insert(frame.end(), payload.begin(), payload.end());
@@ -118,16 +134,16 @@ namespace pprzlink {
       reject(std::format("length declares {} bytes, actual frame data has {}", dataSize, frame.size() - envelopeSize));
     }
     if (dataSize == 0) reject("missing API frame type");
-    if (frame[3] != tx16 && frame[3] != tx64) {
-      reject(std::format("unsupported transmit frame type 0x{:02x} (expected 0x00 or 0x01)", frame[3]));
+    if (frame[3] != tx16 && frame[3] != tx64 && frame[3] != 0x10) {
+      reject(std::format("unsupported transmit frame type 0x{:02x} (expected 0x00, 0x01 or 0x10)", frame[3]));
     }
-    const size_t headerSize = frame[3] == tx16 ? 5 : 11;
+    const size_t headerSize = frame[3] == 0x10 ? 14 : (frame[3] == tx16 ? 5 : 11);
     if (dataSize < headerSize) reject("truncated radio address/transmit header");
     const size_t payloadSize = dataSize - headerSize;
     if (payloadSize < detail::messageHeaderSize || payloadSize > maximumRfPayloadSize) {
       reject(std::format("RF payload has {} bytes; expected 4..100 including the PPRZLINK header", payloadSize));
     }
-    if ((frame[3 + headerSize - 1] & ~0x05) != 0) reject("reserved transmit option bits are set");
+    if ((frame[3 + headerSize - 1] & ~(frame[3] == 0x10 ? 0x03 : 0x05)) != 0) reject("reserved transmit option bits are set");
     // Check the sum including the checksum, independently of the encoder's helper.
     uint8_t sum = 0;
     for (const auto byte : frame.subspan(3)) sum += byte;
@@ -148,6 +164,7 @@ namespace pprzlink {
     currentMessage.reset();
     receiveInfo.reset();
     lastFrameId = 0;
+    lastReceivedFrameSize = 0;
   }
 
   bool XbeeTransport::pollInitialization(XbeeModem::TimePoint now)
@@ -171,8 +188,11 @@ namespace pprzlink {
     };
 
     switch (data[0]) {
+      case tx16:
       case rx16:
       case rx64: {
+        if (api != Api::Legacy802154) break;
+        if (data[0] == tx16 && !simulatedReceiveEnabled) break;
         const bool addressIs64Bit = data[0] == rx64;
         const size_t addressSize = addressIs64Bit ? 8 : 2;
         const size_t headerSize = addressSize + 3;
@@ -185,6 +205,20 @@ namespace pprzlink {
         currentMessage = std::move(message);
         break;
       }
+      case 0x90: {
+        if (api != Api::Series868) break;
+        requireSize(12 + detail::messageHeaderSize);
+        const auto payload = data.subspan(12);
+        if (payload.size() > maximumRfPayloadSize) throw wrong_message_format("XBee RF payload exceeds 100 bytes");
+        currentMessage = std::make_unique<Message>(detail::decodeMessagePayload(dictionary, payload));
+        receiveInfo = ReceiveInfo{readAddress(data.subspan(1, 8)), true, 0, data[11], false};
+        break;
+      }
+      case 0x8b:
+        if (api != Api::Series868) break;
+        requireSize(7, true);
+        notify(TransmitStatus{data[1], data[5], data[4]});
+        break;
       case txStatus:
         requireSize(3, true);
         notify(TransmitStatus{data[1], data[2]});
@@ -213,13 +247,21 @@ namespace pprzlink {
     };
     while (cursor < transportBuffer.size()) {
       const auto start = std::find(transportBuffer.begin() + cursor, transportBuffer.end(), startByte);
+      statistics.discardedBytes += static_cast<size_t>(start - (transportBuffer.begin() + cursor));
       cursor = static_cast<size_t>(start - transportBuffer.begin());
       const auto remaining = std::span<const uint8_t>(transportBuffer).subspan(cursor);
       switch (inspectFrame(remaining)) {
         case FrameStatus::Incomplete:
           discardThrough(cursor);
           return false;
-        case FrameStatus::Invalid:
+        case FrameStatus::BadLength:
+          ++statistics.lengthErrors;
+          ++statistics.discardedBytes;
+          ++cursor;
+          continue;
+        case FrameStatus::BadChecksum:
+          ++statistics.checksumErrors;
+          ++statistics.discardedBytes;
           ++cursor;
           continue;
         case FrameStatus::Complete:
@@ -230,10 +272,15 @@ namespace pprzlink {
       try {
         decodeFrame(remaining.subspan(3, dataSize));
       } catch (...) {
+        ++statistics.decodingErrors;
+        statistics.discardedBytes += dataSize + envelopeSize;
         discardThrough(cursor);
         throw;
       }
       if (currentMessage) {
+        lastReceivedFrameSize = dataSize + envelopeSize;
+        ++statistics.receivedMessages;
+        statistics.receivedMessageBytes += lastReceivedFrameSize;
         discardThrough(cursor);
         return true;
       }

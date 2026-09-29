@@ -38,6 +38,7 @@
  */
 
 #include "Transport.h"
+#include "PprzFrameCodec.h"
 
 #define PPRZ_STX (0x99)
 
@@ -54,10 +55,11 @@ namespace pprzlink {
     std::unique_ptr<Message> getMessage() override;
 
     size_t sendMessage(const Message &msg) override;
+
   protected:
     bool decodeMessage();
 
-    BytesBuffer transportBuffer;
+    PprzFrameDecoder decoder;
     std::unique_ptr<Message> currentMessage;
   };
 }

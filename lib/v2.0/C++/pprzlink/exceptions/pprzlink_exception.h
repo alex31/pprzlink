@@ -21,6 +21,9 @@
 #define PPRZLINKCPP_PPRZLINK_EXCEPTION_H
 
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <variant>
 
 #define DECLARE_PPRZLINK_EXCEPT(a) class a : public pprzlink_exception {\
 public:\
@@ -29,6 +32,20 @@ explicit a(const std::string &arg) :\
 };
 
 namespace pprzlink {
+  /// Preserve the existing std::bad_variant_access catch contract with useful context.
+  class field_type_mismatch : public std::bad_variant_access {
+  public:
+    explicit field_type_mismatch(std::string message) : message(std::move(message)) {}
+    const char *what() const noexcept override { return message.c_str(); }
+  private:
+    std::string message;
+  };
+
+  class field_conversion_error : public std::out_of_range {
+  public:
+    using std::out_of_range::out_of_range;
+  };
+
   class pprzlink_exception : public std::runtime_error {
   public:
     pprzlink_exception(const std::string &arg) : runtime_error(arg){}

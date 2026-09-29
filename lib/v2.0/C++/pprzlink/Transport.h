@@ -23,6 +23,8 @@
 #include "Message.h"
 #include "Device.h"
 #include "MessageDictionary.h"
+#include "TransportStatistics.h"
+#include "ReceivedMessage.h"
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -48,8 +50,22 @@ namespace pprzlink {
 
     virtual std::unique_ptr<Message> getMessage() = 0;
 
+    /// Poll I/O and return a complete message with its metadata, or nullopt.
+    /// As with getMessage(), malformed payloads and I/O failures throw.
+    /// Calls on one transport remain serialized by the application.
+    [[nodiscard]] virtual std::optional<ReceivedMessage> tryReceive()
+    {
+      auto message = getMessage();
+      if (!message) return std::nullopt;
+      return ReceivedMessage{std::move(*message), lastReceivedFrameSize, std::nullopt, std::nullopt};
+    }
+
     /// Write a complete message and return the number of bytes sent, or throw.
     virtual size_t sendMessage(const Message &msg) = 0;
+
+    [[nodiscard]] const TransportStatistics &getStatistics() const noexcept { return statistics; }
+    /// Size of the last successfully decoded message's complete transport frame.
+    [[nodiscard]] size_t getLastReceivedFrameSize() const noexcept { return lastReceivedFrameSize; }
 
     /// Borrow the device until transport destruction; never delete it or transfer ownership.
     [[nodiscard]] Device& getDevice() noexcept { return *device; }
@@ -58,6 +74,8 @@ namespace pprzlink {
   protected:
     std::unique_ptr<Device> device;
     const MessageDictionary &dictionary;
+    TransportStatistics statistics;
+    size_t lastReceivedFrameSize = 0;
   };
 }
 #endif // PPRZLINKCPP_TRANSPORT_H

@@ -68,10 +68,11 @@ namespace pprzlink {
     checked(bus.request_stop());
   }
 
-  long IvyLink::storeSubscription(ivy::Bus::BindResult result)
+  long IvyLink::storeSubscription(ivy::Subscription subscription)
   {
     const long id = nextBindId++;
-    storeSubscription(id, std::move(result));
+    std::lock_guard lock(subscriptionsMutex);
+    subscriptions.emplace(id, std::move(subscription));
     return id;
   }
 
@@ -84,8 +85,18 @@ namespace pprzlink {
 
   long IvyLink::BindMessage(const MessageDefinition &def, messageCallback_t cb)
   {
+    return storeSubscription(subscribeMessage(def, std::move(cb)));
+  }
+
+  ivy::Subscription IvyLink::subscribeMessage(std::string_view name, messageCallback_t cb)
+  {
+    return subscribeMessage(dictionary.getDefinition(std::string(name)), std::move(cb));
+  }
+
+  ivy::Subscription IvyLink::subscribeMessage(const MessageDefinition &def, messageCallback_t cb)
+  {
     const auto regexp = "^([^ ]*) " + ivy_codec::messageRegexp(def);
-    return storeSubscription(bus.bind_raw(
+    return checked(bus.bind_raw(
       [def, cb = std::move(cb)](IvyClientPtr, std::span<const std::string_view> args) {
         if (args.empty()) {
           throw wrong_message_format("Missing sender in " + def.getName());
@@ -97,8 +108,13 @@ namespace pprzlink {
 
   long IvyLink::BindOnSrcAc(std::string ac_id, messageCallback_t cb)
   {
+    return storeSubscription(subscribeSender(std::move(ac_id), std::move(cb)));
+  }
+
+  ivy::Subscription IvyLink::subscribeSender(std::string ac_id, messageCallback_t cb)
+  {
     const auto regexp = "^(" + ivy_codec::escapeRegexp(ac_id) + ") (.*)$";
-    return storeSubscription(bus.bind_raw(
+    return checked(bus.bind_raw(
       [this, cb = std::move(cb)](IvyClientPtr, std::span<const std::string_view> args) {
         if (args.size() != 2) {
           throw wrong_message_format("Missing sender or message body");
@@ -168,12 +184,17 @@ namespace pprzlink {
 
   long IvyLink::registerRequestAnswerer(const MessageDefinition &def, answererCallback_t cb)
   {
+    return storeSubscription(subscribeRequestAnswerer(def, std::move(cb)));
+  }
+
+  ivy::Subscription IvyLink::subscribeRequestAnswerer(const MessageDefinition &def, answererCallback_t cb)
+  {
     if (!def.isRequest()) {
       throw message_is_not_request("Message " + def.getName() + " is not a request message");
     }
     const auto answerName = def.getName().substr(0, def.getName().size() - 4);
     const auto regexp = "^([^ ]*) ([^ ]*) " + ivy_codec::messageRegexp(def);
-    return storeSubscription(bus.bind_raw(
+    return checked(bus.bind_raw(
       [this, def, answerName, cb = std::move(cb)]
       (IvyClientPtr, std::span<const std::string_view> args) {
         if (args.size() < 2) {

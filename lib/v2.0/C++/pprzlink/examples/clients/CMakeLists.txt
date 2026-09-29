@@ -1,0 +1,19 @@
+cmake_minimum_required(VERSION 3.20)
+project(pprzlink_clients LANGUAGES CXX)
+
+# This directory can be copied out of the repository and built against an installed SDK.
+option(CLIENTS_WITH_IVY "Build the Ivy receiver as well as serial/UDP clients" ON)
+set(components io)
+if(CLIENTS_WITH_IVY)
+    list(APPEND components ivy)
+endif()
+find_package(pprzlink++ CONFIG REQUIRED COMPONENTS ${components})
+
+add_executable(serial_aircraft SerialAircraft.cpp)
+target_link_libraries(serial_aircraft PRIVATE pprzlink::io)
+add_executable(udp_recorder UdpRecorder.cpp)
+target_link_libraries(udp_recorder PRIVATE pprzlink::io)
+if(CLIENTS_WITH_IVY)
+    add_executable(ivy_receiver IvyReceiver.cpp)
+    target_link_libraries(ivy_receiver PRIVATE pprzlink::ivy)
+endif()

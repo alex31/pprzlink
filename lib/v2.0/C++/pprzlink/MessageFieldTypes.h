@@ -36,7 +36,9 @@ namespace pprzlink {
     UINT32,
     FLOAT,
     DOUBLE,
-    STRING
+    STRING,
+    INT64,
+    UINT64
   };
 
   size_t sizeofBaseType(BaseType type);

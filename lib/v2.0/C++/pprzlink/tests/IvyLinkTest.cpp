@@ -252,6 +252,55 @@ namespace {
     require(!receiver.getBus().take_callback_error(), "Callback failure is observable");
     std::cout << "Manual loop, stopped-bus errors and range validation passed\n";
   }
+
+  void testOwnedSubscriptions(const MessageDictionary &dict, const std::string &domain)
+  {
+    std::atomic<int> messages{0}, fromSender{0}, answers{0};
+    IvyLink receiver(dict, "owned-rx", domain, true);
+    IvyLink sender(dict, "owned-tx", domain, true);
+    {
+      auto subscription = receiver.subscribeMessage("EMPTY", [&](std::string, Message) { ++messages; });
+      auto moved = std::move(subscription);
+      require(!subscription.is_bound() && moved.is_bound(), "Moving transfers native Ivy ownership");
+      waitBindings(sender, "owned-rx", 1);
+      sendRaw(sender, "42 EMPTY");
+      waitFor([&] { return messages == 1; }, "owned message callback");
+    }
+    waitBindings(sender, "owned-rx", 0); // Scope exit really removed the remote subscription.
+    {
+      auto subscription = receiver.subscribeSender("plane.1", [&](std::string source, Message) {
+        require(source == "plane.1", "Literal sender selector");
+        ++fromSender;
+      });
+      waitBindings(sender, "owned-rx", 1);
+      sendRaw(sender, "plane.1 EMPTY");
+      waitFor([&] { return fromSender == 1; }, "owned sender callback");
+      require(subscription.unbind().has_value(), "Explicit native cancellation");
+    }
+    waitBindings(sender, "owned-rx", 0);
+    {
+      auto answerer = receiver.subscribeRequestAnswerer(dict.getDefinition("EMPTY_REQ"), [&](std::string, Message) {
+        Message answer(dict.getDefinition("EMPTY"));
+        answer.setSenderId(std::string("server"));
+        return answer;
+      });
+      waitBindings(sender, "owned-rx", 1);
+      Message request(dict.getDefinition("EMPTY_REQ"));
+      request.setSenderId(std::string("client"));
+      sender.sendRequest(request, [&](std::string, Message) { ++answers; });
+      waitFor([&] { return answers == 1; }, "owned answerer with legacy request API");
+    }
+    waitBindings(sender, "owned-rx", 0);
+
+    ivy::Subscription surviving;
+    {
+      IvyLink temporary(dict, "owned-temporary", domain, true);
+      surviving = temporary.subscribeMessage("EMPTY", [](std::string, Message) {});
+      require(surviving.is_bound(), "Subscription starts active");
+    }
+    require(!surviving.is_bound() && surviving.unbind().has_value(), "Token safely outlives its link");
+    require(receiver.getBus().take_callback_error().has_value(), "Owned callbacks remain valid");
+  }
 }
 
 int main()
@@ -284,6 +333,7 @@ int main()
     testRequests(dict, domainA);
     testIsolation(dict, domainA, domainB);
     testLifecycleAndErrors(dict, domainA);
+    testOwnedSubscriptions(dict, domainA);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

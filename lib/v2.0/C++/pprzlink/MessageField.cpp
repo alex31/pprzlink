@@ -18,6 +18,7 @@
  */
 
 #include <pprzlink/MessageField.h>
+#include <utility>
 
 namespace pprzlink {
 
@@ -33,9 +34,9 @@ namespace pprzlink {
     }
   }
 
-  MessageField::MessageField(const std::string &name, const std::string &typeString)
+  MessageField::MessageField(const std::string &name, const std::string &typeString, std::string format)
     : MessageField(name, FieldType(typeString))
-  {}
+  { this->format = std::move(format); }
 
   const std::string &MessageField::getName() const
   {

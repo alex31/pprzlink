@@ -30,7 +30,8 @@ namespace pprzlink {
   public:
     MessageField(const std::string &name, const FieldType &type);
 
-    MessageField(const std::string &name, const std::string &typeString);
+    MessageField(const std::string &name, const std::string &typeString,
+                 std::string format = {});
 
     [[nodiscard]] const std::string &getName() const;
 
@@ -38,10 +39,13 @@ namespace pprzlink {
 
     /// Fixed data size; zero for strings/dynamic arrays. Excludes count prefixes.
     [[nodiscard]] size_t getSize() const;
+    /// Optional XML display format; interpreted only by the legacy Ivy serializer.
+    [[nodiscard]] const std::string &getFormat() const noexcept { return format; }
   private:
     std::string name;
     FieldType type;
     size_t size;
+    std::string format;
   };
 }
 

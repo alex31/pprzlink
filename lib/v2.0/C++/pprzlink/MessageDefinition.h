@@ -31,6 +31,7 @@ namespace pprzlink {
   /// It contains no transmitted values; Message populates a copy of this schema.
   class MessageDefinition {
   public:
+    enum class LinkMode { None, Forwarded, Broadcasted };
     MessageDefinition();
 
     explicit MessageDefinition(const tinyxml2::XMLElement *xml, int classId);
@@ -57,10 +58,13 @@ namespace pprzlink {
 
     [[nodiscard]] bool isRequest() const;
 
+    [[nodiscard]] LinkMode getLinkMode() const noexcept { return linkMode; }
+
   private:
     uint8_t classId;
     uint8_t id;
     std::string name;
+    LinkMode linkMode = LinkMode::None;
     std::vector<MessageField> fields;
     std::map<std::string, size_t> fieldNameToIndex;
   };

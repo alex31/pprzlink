@@ -22,6 +22,7 @@
 
 #include <pprzlink/MessageField.h>
 #include <pprzlink/Device.h>
+#include <pprzlink/detail/CheckedNumber.h>
 #include <algorithm>
 #include <array>
 #include <concepts>
@@ -72,9 +73,11 @@ namespace pprzlink {
         case BaseType::INT8: return visitor.template operator()<int8_t>();
         case BaseType::INT16: return visitor.template operator()<int16_t>();
         case BaseType::INT32: return visitor.template operator()<int32_t>();
+        case BaseType::INT64: return visitor.template operator()<int64_t>();
         case BaseType::UINT8: return visitor.template operator()<uint8_t>();
         case BaseType::UINT16: return visitor.template operator()<uint16_t>();
         case BaseType::UINT32: return visitor.template operator()<uint32_t>();
+        case BaseType::UINT64: return visitor.template operator()<uint64_t>();
         case BaseType::FLOAT: return visitor.template operator()<float>();
         case BaseType::DOUBLE: return visitor.template operator()<double>();
         case BaseType::STRING: return visitor.template operator()<std::string>();
@@ -89,8 +92,10 @@ namespace pprzlink {
   public:
     using Storage = std::variant<
       char, int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, float, double, std::string,
+      int64_t, uint64_t,
       std::vector<char>, std::vector<int8_t>, std::vector<int16_t>, std::vector<int32_t>,
       std::vector<uint8_t>, std::vector<uint16_t>, std::vector<uint32_t>,
+      std::vector<int64_t>, std::vector<uint64_t>,
       std::vector<float>, std::vector<double>, std::vector<std::string>>;
 
     // A field cannot exist without both its definition and a value.
@@ -153,6 +158,18 @@ namespace pprzlink {
       return output;
     }
 
+    /// Explicit numeric conversion. Fractional-to-integer and out-of-range reads throw.
+    /// Floating-point destinations follow normal rounding; this is not a lossless conversion API.
+    template<Arithmetic T>
+    [[nodiscard]] T getValueAs() const
+    {
+      return std::visit([this]<class Stored>(const Stored &item) -> T {
+        if constexpr (Arithmetic<Stored>) return detail::checkedNumber<T>(item, getName());
+        else throw field_type_mismatch(std::format("Field '{}' has type {}, requested numeric {}",
+                                                  getName(), getType().toString(), detail::valueTypeName<T>()));
+      }, value);
+    }
+
     [[nodiscard]] const MessageField &getField() const { return field; }
     [[nodiscard]] const FieldType &getType() const { return field.getType(); }
     [[nodiscard]] const std::string &getName() const { return field.getName(); }
@@ -174,21 +191,22 @@ namespace pprzlink {
     const T &stored() const
     {
       // Also handles requested arithmetic/container types absent from Storage.
-      return std::visit([]<class Stored>(const Stored &item) -> const T& {
+      return std::visit([this]<class Stored>(const Stored &item) -> const T& {
         if constexpr (std::same_as<T, Stored>) return item;
-        else throw std::bad_variant_access();
+        else throw field_type_mismatch(std::format("Field '{}' has type {}, requested {}",
+                                                  getName(), getType().toString(), detail::valueTypeName<T>()));
       }, value);
     }
 
     template<class To, class From>
-    static To convertElement(const From &input)
+    static To convertElement(const From &input, const std::string &fieldName)
     {
       if constexpr (std::same_as<To, std::string>) {
         std::ostringstream stream;
         stream << input;
         return stream.str();
-      } else if constexpr (requires { static_cast<To>(input); }) {
-        return static_cast<To>(input);
+      } else if constexpr (Arithmetic<From>) {
+        return detail::checkedNumber<To>(input, fieldName);
       } else {
         throw std::logic_error("Cannot convert this array element to a numeric field");
       }
@@ -201,7 +219,7 @@ namespace pprzlink {
         throw std::logic_error("Cannot build array field " + field.getName() + " from a scalar");
       }
       return detail::visitBaseType(field.getType().getBaseType(), [&]<class Target>() -> Storage {
-        return convertElement<Target>(input);
+        return convertElement<Target>(input, field.getName());
       });
     }
 
@@ -212,7 +230,10 @@ namespace pprzlink {
       return detail::visitBaseType(field.getType().getBaseType(), [&]<class Target>() -> Storage {
         std::vector<Target> result;
         result.reserve(input.size());
-        for (const auto &element : input) result.push_back(convertElement<Target>(element));
+        for (const auto &element : input) {
+          // Read through value_type so proxy ranges such as vector<bool> are checked too.
+          result.push_back(convertElement<Target>(static_cast<typename Container::value_type>(element), field.getName()));
+        }
         return result;
       });
     }

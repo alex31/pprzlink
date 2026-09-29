@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Record three messages with the source endpoint belonging to each message.
+#include <pprzlink/UdpTransport.h>
+#include <pprzlink/IvyMessageCodec.h>
+#include <charconv>
+#include <chrono>
+#include <iostream>
+#include <thread>
+
+int main(int argc, char **argv)
+{
+  if (argc != 3) {
+    std::cerr << "Usage: udp_recorder messages.xml local-port (0 chooses a free port)\n";
+    return 2;
+  }
+  try {
+    using namespace std::chrono_literals;
+    const std::string_view text(argv[2]);
+    uint16_t port = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), port);
+    if (error != std::errc{} || end != text.data() + text.size())
+      throw std::invalid_argument("Invalid UDP port");
+    const pprzlink::MessageDictionary dictionary(argv[1]);
+    boost::asio::io_context context;
+    pprzlink::UdpTransport transport(context, dictionary,
+      {.local = {"127.0.0.1", port}});
+    std::cout << "Listening on " << transport.localEndpoint().port << std::endl;
+
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    int count = 0;
+    while (count < 3 && std::chrono::steady_clock::now() < deadline) {
+      if (auto received = transport.tryReceive()) {
+        std::cout << received->udpPeer->address << ':' << received->udpPeer->port
+                  << " [" << received->frameSize << " bytes] "
+                  << pprzlink::ivy_codec::serializeMessage(received->message) << std::endl;
+        ++count;
+      } else {
+        std::this_thread::sleep_for(5ms); // This small console program has no other work.
+      }
+    }
+    return count == 3 ? 0 : 1;
+  } catch (const std::exception &error) {
+    std::cerr << error.what() << '\n';
+    return 1;
+  }
+}

@@ -38,9 +38,11 @@ namespace pprzlink {
       TypeInfo{BaseType::INT8, "int8", 1},
       TypeInfo{BaseType::INT16, "int16", 2},
       TypeInfo{BaseType::INT32, "int32", 4},
+      TypeInfo{BaseType::INT64, "int64", 8},
       TypeInfo{BaseType::UINT8, "uint8", 1},
       TypeInfo{BaseType::UINT16, "uint16", 2},
       TypeInfo{BaseType::UINT32, "uint32", 4},
+      TypeInfo{BaseType::UINT64, "uint64", 8},
       TypeInfo{BaseType::FLOAT, "float", 4},
       TypeInfo{BaseType::DOUBLE, "double", 8},
       TypeInfo{BaseType::STRING, "string", 0}

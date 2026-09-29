@@ -158,9 +158,9 @@ the PPRZLINK v2 header. XML defines messages, not the transport mode.
   {
     for (;;) {
       try {
-        auto message = transport.getMessage();
-        if (!message) return;
-        std::cout << ivy_codec::serializeMessage(*message) << std::endl;
+        auto received = transport.tryReceive();
+        if (!received) return;
+        std::cout << ivy_codec::serializeMessage(received->message) << std::endl;
       } catch (const pprzlink_exception &error) {
         std::cerr << "Discarded message: " << error.what() << '\n';
       } catch (const std::out_of_range &error) {
