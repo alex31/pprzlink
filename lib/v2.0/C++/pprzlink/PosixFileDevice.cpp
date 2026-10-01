@@ -1,4 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+/**
+ * @file PosixFileDevice.cpp
+ * @brief Bounded file/FIFO polling and complete descriptor writes.
+ * @ingroup transports
+ *
+ * Buffered input is delivered before EOF or read errors. Nonblocking writes wait for readiness with a bounded timeout and fail on incomplete delivery.
+ */
+
 #include "PosixFileDevice.h"
 #include <array>
 #include <cerrno>

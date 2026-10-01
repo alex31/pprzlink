@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file Message.h
+ * @brief Populated messages with schema copies and sender/receiver addressing.
+ * @ingroup messages
+ *
+ * Fields remain unset until supplied. Single-field updates validate before replacement; grouped updates are ordered and not transactional as a whole.
+ */
+
 #ifndef PPRZLINKCPP_MESSAGE_H
 #define PPRZLINKCPP_MESSAGE_H
 
@@ -31,35 +39,58 @@
 
 namespace pprzlink {
   namespace detail {
-    // Named constraints keep errors on the caller's setField(), before expanding pairs.
+    /// @brief Require complete name/value argument pairs before expanding a grouped setter.
+    /// @ingroup internals
+    /// @tparam Arguments Setter argument pack to count.
     template<class... Arguments>
     concept EvenNumberOfFieldArguments = (sizeof...(Arguments) % 2 == 0);
 
+    /// @brief Recursively validate the name positions of a setter argument pack.
+    /// @ingroup internals
+    /// @tparam Arguments Alternating name/value types; the primary template rejects malformed packs.
     template<class... Arguments>
     struct FieldNameTypes : std::false_type {};
 
+    /// @brief Accept an empty argument pack as the recursive base case.
     template<>
     struct FieldNameTypes<> : std::true_type {};
 
+    /// @brief Require each name to be string-convertible, then check the remaining pairs.
+    /// @tparam Name Current field-name argument type.
+    /// @tparam Value Current value argument type, validated by FieldValue later.
+    /// @tparam Remaining Remaining name/value pairs.
     template<class Name, class Value, class... Remaining>
     struct FieldNameTypes<Name, Value, Remaining...>
       : std::bool_constant<std::convertible_to<Name, std::string> &&
                            FieldNameTypes<Remaining...>::value> {};
 
+    /// @brief Constraint selecting string-convertible field names in each pair.
+    /// @ingroup internals
+    /// @tparam Arguments Alternating name/value types to validate.
     template<class... Arguments>
     concept FieldNamesAreStrings = FieldNameTypes<Arguments...>::value;
   }
 
   /// A copy of a message definition, its populated FieldValues and sender/receiver IDs.
   /// Create from a dictionary definition, populate fields, then send through a link/transport.
+  /// @ingroup messages
   class Message {
   public:
+    /// @brief Text Ivy sender name or numeric binary sender identifier.
     using SenderId = std::variant<std::string, uint8_t>;
 
+    /// @brief Create an empty schema/value set with all addressing IDs initially zero.
+    /// Assign a schema-backed Message before using this placeholder for transmission.
     explicit Message();
+    /// @brief Copy a schema without populating any field values.
+    /// @param[in] def Definition copied into this message; its owner need not outlive the copy.
     explicit Message(const MessageDefinition &def);
 
     /// Validate and convert before inserting/replacing a field; no default value is created.
+    /// @tparam ValueType Input type accepted by the XML-selected FieldValue constructor.
+    /// @param[in] name Exact declared field name.
+    /// @param[in] value Input converted with setField()'s validation rules.
+    /// @throws std::exception Unknown field, schema/type mismatch, extent or numeric conversion failure.
     template<class ValueType>
     void addField(const std::string &name, ValueType value)
     {
@@ -69,6 +100,12 @@ namespace pprzlink {
     /// Set or replace a field and return this message for sending, without copying.
     /// The returned reference is valid while this message lives.
     /// Invalid input leaves the previous value unchanged.
+    /// @tparam ValueType Input type accepted by the XML-selected FieldValue constructor.
+    /// @param[in] name Exact declared field name.
+    /// @param[in] value New scalar, string or array value.
+    /// @return A const reference to this message, valid for its lifetime.
+    /// @throws no_such_field The name is not declared by the schema.
+    /// @throws std::exception FieldValue validation or conversion fails before replacement.
     template<class ValueType>
     const Message &setField(const std::string &name, ValueType value)
     {
@@ -82,6 +119,13 @@ namespace pprzlink {
     /// Return this message by const reference after all pairs succeed.
     /// If a pair throws, earlier pairs remain applied; the failing and subsequent
     /// pairs are unchanged.
+    /// @tparam ValueType First value's input type.
+    /// @tparam Remaining Types of the remaining alternating name/value arguments.
+    /// @param[in] name First declared field name.
+    /// @param[in] value First value converted according to its XML type.
+    /// @param[in] remaining Additional name/value pairs in application order.
+    /// @return A const reference to this message after all updates succeed.
+    /// @throws std::exception A later update can fail after earlier pairs have already changed.
     template<class ValueType, class... Remaining>
       requires (sizeof...(Remaining) > 0) &&
                detail::EvenNumberOfFieldArguments<Remaining...> &&
@@ -94,12 +138,23 @@ namespace pprzlink {
     }
 
     /// Exact-type reads. Missing definitions/values retain their distinct exceptions.
+    /// @tparam ValueType Exact scalar/string/array output type accepted by FieldValue.
+    /// @param[in] name Exact field name.
+    /// @param[out] value Destination populated by the exact-read overload.
+    /// @throws no_such_field The field is not declared.
+    /// @throws field_has_no_value The field is declared but unset.
+    /// @throws std::exception The requested type or array extent does not match.
     template<class ValueType>
     void getField(const std::string &name, ValueType &value) const
     {
       fieldWithValue(name).getValue(value);
     }
 
+    /// @brief Read an exact-type value by XML field position.
+    /// @tparam ValueType Exact scalar/string/array output type.
+    /// @param[in] index Zero-based XML field position.
+    /// @param[out] value Destination populated by the exact-read overload.
+    /// @throws std::exception The position, value, type or array extent is invalid.
     template<class ValueType>
     void getField(size_t index, ValueType &value) const
     {
@@ -107,12 +162,21 @@ namespace pprzlink {
     }
 
     /// Return a scalar, string or container instead of taking an output parameter.
+    /// @tparam ValueType Exact stored output type supported by FieldValue::getValue().
+    /// @param[in] name Exact field name.
+    /// @return An owned scalar, string or container.
+    /// @throws std::exception Unknown/unset field or exact-read type/extent mismatch.
     template<class ValueType>
     [[nodiscard]] ValueType getField(const std::string &name) const
     {
       return fieldWithValue(name).getValue<ValueType>();
     }
 
+    /// @brief Return an exact-type value by XML position.
+    /// @tparam ValueType Exact stored output type.
+    /// @param[in] index Zero-based XML field position.
+    /// @return An owned scalar, string or container.
+    /// @throws std::exception Invalid position, unset value or exact-read mismatch.
     template<class ValueType>
     [[nodiscard]] ValueType getField(size_t index) const
     {
@@ -120,12 +184,21 @@ namespace pprzlink {
     }
 
     /// Request an explicit checked numeric conversion instead of an exact-type read.
+    /// @tparam ValueType Requested arithmetic destination type.
+    /// @param[in] name Exact field name.
+    /// @return Checked numeric conversion; floating-point destinations may round.
+    /// @throws std::exception Unknown/unset field, non-numeric storage or invalid numeric conversion.
     template<Arithmetic ValueType>
     [[nodiscard]] ValueType getFieldAs(const std::string &name) const
     {
       return fieldWithValue(name).getValueAs<ValueType>();
     }
 
+    /// @brief Convert a numeric field selected by XML position.
+    /// @tparam ValueType Requested arithmetic destination type.
+    /// @param[in] index Zero-based XML field position.
+    /// @return Checked numeric conversion without modifying the stored value.
+    /// @throws std::exception Invalid position/value/type or numeric conversion failure.
     template<Arithmetic ValueType>
     [[nodiscard]] ValueType getFieldAs(size_t index) const
     {
@@ -134,50 +207,111 @@ namespace pprzlink {
 
     /// Read the XML-selected variant without copying. Do not retain the reference
     /// beyond destruction/assignment of this message or replacement of this field.
+    /// @param[in] name Exact field name.
+    /// @return Borrowed, read-only variant for use with std::visit.
+    /// @throws no_such_field The field is not declared.
+    /// @throws field_has_no_value The field is unset.
     [[nodiscard]] const FieldValue::Storage &getField(const std::string &name) const
     {
       return fieldWithValue(name).getValue();
     }
 
+    /// @brief Borrow the stored variant by XML field position.
+    /// @param[in] index Zero-based XML field position.
+    /// @return Read-only variant valid until field replacement or message destruction/assignment.
+    /// @throws std::exception The position is invalid or its value is unset.
     [[nodiscard]] const FieldValue::Storage &getField(size_t index) const
     {
       return getField(def.getField(index).getName());
     }
 
     /// Binary codec wrappers; offset advances only after a complete field is stored.
+    /// @param[in] index Zero-based XML field position.
+    /// @param[in] buffer Little-endian binary field input.
+    /// @param[in,out] offset Cursor committed only after decoding and storing the entire value.
+    /// @throws std::exception Invalid position, truncated data or unsupported binary type.
     void addFieldFromBuffer(size_t index, const BytesBuffer &buffer, size_t &offset);
+    /// @brief Decode a field from a borrowed binary input span.
+    /// @param[in] index Zero-based XML field position.
+    /// @param[in] buffer Input bytes copied into the new field value.
+    /// @param[in,out] offset Cursor committed only after complete decoding and storage.
+    /// @throws std::exception Invalid position, truncated data or unsupported binary type.
     void addFieldFromBuffer(size_t index, std::span<const uint8_t> buffer, size_t &offset);
+    /// @brief Append one populated field's binary representation.
+    /// @param[in] index Zero-based XML field position.
+    /// @param[in,out] buffer Byte sequence to append to.
+    /// @return Number of appended bytes, including any count prefix.
+    /// @throws std::exception Invalid position, unset value or unsupported/oversized binary field.
     size_t addFieldToBuffer(size_t index, BytesBuffer &buffer) const;
 
     /// Same missing-field/value exceptions as getField; references belong to this message.
+    /// @param[in] index Zero-based XML field position.
+    /// @return Borrowed FieldValue valid until field replacement or message destruction/assignment.
+    /// @throws std::exception Invalid position or unset field.
     [[nodiscard]] const FieldValue &getRawValue(size_t index) const;
+    /// @brief Borrow a populated field by name.
+    /// @param[in] name Exact field name.
+    /// @return FieldValue reference valid until replacement or message destruction/assignment.
+    /// @throws no_such_field The field is not declared.
+    /// @throws field_has_no_value The field is unset.
     [[nodiscard]] const FieldValue &getRawValue(const std::string &name) const;
+    /// @brief Count the fields that have actual values.
+    /// @return Populated value count, not necessarily the schema's field count.
     [[nodiscard]] size_t getNbValues() const;
+    /// @brief Borrow the message's owned schema copy.
+    /// @return Definition reference valid until message destruction or assignment.
     [[nodiscard]] const MessageDefinition &getDefinition() const;
+    /// @brief Describe field names and values, showing NOTSET for unpopulated fields.
+    /// @return Diagnostic text; this is not the Ivy wire serializer.
     [[nodiscard]] std::string toString() const;
 
+    /// @brief Borrow the numeric or textual sender identifier.
+    /// @return Variant reference valid until sender replacement or message destruction/assignment.
     const SenderId &getSenderId() const;
+    /// @brief Inspect the binary receiver identifier.
+    /// @return Byte-sized receiver ID; 255 is used as broadcast by the transports.
     uint8_t getReceiverId() const;
+    /// @brief Inspect the stored component identifier.
+    /// @return Byte-sized value; binary codecs require it to fit in four bits.
     uint8_t getComponentId() const;
+    /// @brief Inspect the class identifier from the owned schema.
+    /// @return Four-bit XML class identifier.
     uint8_t getClassId() const;
+    /// @brief Replace the sender with a numeric byte ID or text Ivy name.
+    /// @param[in] senderId Value copied into the message; binary encoding requires text to be a decimal byte ID.
     void setSenderId(const SenderId &senderId);
+    /// @brief Replace the binary receiver identifier.
+    /// @param[in] receiverId Byte-sized destination ID, including broadcast value 255.
     void setReceiverId(uint8_t receiverId);
+    /// @brief Store a byte-sized component identifier.
+    /// @param[in] componentId Value stored here; binary encoding separately requires [0, 15].
     void setComponentId(uint8_t componentId);
 
     /// Numeric header IDs use the same checked conversion as numeric fields.
     /// String sender names remain available for Ivy through the SenderId overload.
+    /// @tparam ValueType Arithmetic input type.
+    /// @param[in] senderId Numeric ID checked against the byte range before replacing the sender.
+    /// @throws field_conversion_error The ID is fractional, non-finite or outside [0, 255].
     template<Arithmetic ValueType>
     void setSenderId(ValueType senderId)
     {
       setSenderId(SenderId{detail::checkedNumber<uint8_t>(senderId, "sender_id")});
     }
 
+    /// @brief Validate an arithmetic receiver ID before converting it to a byte.
+    /// @tparam ValueType Arithmetic input type other than uint8_t.
+    /// @param[in] receiverId Numeric destination, including broadcast value 255.
+    /// @throws field_conversion_error The ID is fractional, non-finite or outside [0, 255].
     template<Arithmetic ValueType> requires (!std::same_as<ValueType, uint8_t>)
     void setReceiverId(ValueType receiverId)
     {
       setReceiverId(detail::checkedNumber<uint8_t>(receiverId, "receiver_id"));
     }
 
+    /// @brief Validate an arithmetic component ID before converting it to a byte.
+    /// @tparam ValueType Arithmetic input type other than uint8_t.
+    /// @param[in] componentId Numeric byte value; binary encoding additionally restricts it to four bits.
+    /// @throws field_conversion_error The ID is fractional, non-finite or outside [0, 255].
     template<Arithmetic ValueType> requires (!std::same_as<ValueType, uint8_t>)
     void setComponentId(ValueType componentId)
     {
@@ -185,6 +319,9 @@ namespace pprzlink {
     }
 
     /// Binary payload size; all fields must have values.
+    /// @return Encoded XML field bytes, excluding message headers and transport envelopes.
+    /// @throws field_has_no_value The message is incomplete.
+    /// @throws std::exception A field cannot be binary-encoded or exceeds its count limit.
     size_t getByteSize() const;
 
   private:

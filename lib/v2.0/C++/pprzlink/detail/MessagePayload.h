@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
+/**
+ * @file MessagePayload.h
+ * @brief Transport-independent PPRZLINK v2 headers and XML payloads.
+ * @ingroup internals
+ *
+ * The four-byte header contains sender, receiver, class/component and message ID. A decoded payload must contain exactly the fields declared by its schema.
+ */
+
 #pragma once
 
 #include <pprzlink/Message.h>
@@ -8,8 +16,13 @@
 #include <span>
 
 namespace pprzlink::detail {
+  /// @brief Bytes in the sender/receiver/class-component/message-ID v2 header.
   inline constexpr size_t messageHeaderSize = 4;
 
+  /// @brief Convert a sender representation to its binary byte identifier.
+  /// @param[in] sender Numeric byte or complete decimal text in [0, 255].
+  /// @return Byte-sized sender ID.
+  /// @throws wrong_message_format Text cannot be parsed as a complete decimal byte ID.
   inline uint8_t binarySender(const Message::SenderId &sender)
   {
     if (const auto *id = std::get_if<uint8_t>(&sender)) return *id;
@@ -22,7 +35,13 @@ namespace pprzlink::detail {
     return static_cast<uint8_t>(id);
   }
 
-  // PPRZLINK v2 header + XML fields, without any transport delimiter or checksum.
+  /// @brief Encode a v2 header and XML fields without any transport envelope.
+  /// @param[in] message Populated message whose identifiers fit their header widths.
+  /// @param[in] maximumSize Limit including the four-byte message header.
+  /// @return Owned payload with fields in schema order.
+  /// @throws std::length_error The message exceeds the selected payload limit.
+  /// @throws wrong_message_format Sender, class or component IDs cannot be encoded.
+  /// @throws std::exception A field is unset, unsupported or invalid for binary encoding.
   inline BytesBuffer encodeMessagePayload(const Message &message, size_t maximumSize)
   {
     const auto fieldSize = message.getByteSize();
@@ -40,6 +59,11 @@ namespace pprzlink::detail {
     return payload;
   }
 
+  /// @brief Decode one exact v2 message payload using its class/message identifiers.
+  /// @param[in] dictionary Borrowed schemas selecting the header's message type.
+  /// @param[in] payload Exactly one header and its fields, without delimiter or checksums.
+  /// @return Owned message with copied schema, addressing and populated values.
+  /// @throws std::exception Truncated/invalid fields, unknown schema or unexpected trailing bytes.
   inline Message decodeMessagePayload(const MessageDictionary &dictionary, std::span<const uint8_t> payload)
   {
     if (payload.size() < messageHeaderSize) throw wrong_message_format("Truncated PprzLink header");

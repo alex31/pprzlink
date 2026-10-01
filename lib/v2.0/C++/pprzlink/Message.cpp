@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file Message.cpp
+ * @brief Field access, message diagnostics and binary payload sizing.
+ * @ingroup messages
+ *
+ * Unknown fields and unset values remain distinct errors. Binary reads store a complete decoded field before committing the caller offset.
+ */
+
 #include <pprzlink/Message.h>
 #include <pprzlink/BinaryCodec.h>
 #include <pprzlink/TextCodec.h>

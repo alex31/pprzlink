@@ -1,4 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+/**
+ * @file PprzTransport.cpp
+ * @brief Polling transport wrapper around the shared PPRZ frame codec.
+ * @ingroup transports
+ *
+ * Reception drains the device, caches at most one complete message and copies decoder statistics even when payload decoding throws.
+ */
+
 #include "PprzTransport.h"
 
 namespace pprzlink {

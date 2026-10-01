@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file BoostSerialPortDevice.cpp
+ * @brief Serial reception, cancellation and baud-rate changes.
+ * @ingroup transports
+ *
+ * Completion handlers retain State rather than the wrapper. Input generations discard callbacks from a previous baud rate and allow cancellation-safe restart.
+ */
+
 #include "BoostSerialPortDevice.h"
 #include <boost/asio/write.hpp>
 #include <array>
@@ -25,24 +33,35 @@
 #include <utility>
 
 namespace pprzlink {
+  /// @brief Shared serial state retained by pending handlers after wrapper destruction.
+  /// @ingroup internals
+  /// All option, buffer and completion operations use mutex. At most one read
+  /// is pending; inputGeneration distinguishes obsolete baud-rate completions.
   struct BoostSerialPortDevice::State : std::enable_shared_from_this<State> {
+    /// @brief Open a serial port without retaining the wrapper object.
+    /// @param[in] context Caller-owned Asio context that must outlive this state.
+    /// @param[in] name Native serial/PTY device name.
+    /// @throws boost::system::system_error Opening/configuring the native port fails.
     State(boost::asio::io_context &context, const std::string &name) : port(context, name) {}
 
-    std::mutex mutex;
-    boost::asio::serial_port port;
-    std::array<uint8_t, 1024> readBuffer;
-    BytesBuffer received;
-    boost::system::error_code receiveError;
-    bool receiving = false;
-    bool readPending = false;
-    uint64_t inputGeneration = 0;
+    std::mutex mutex; ///< Serializes options, input state and completion callbacks.
+    boost::asio::serial_port port; ///< Owned port borrowing the caller's context.
+    std::array<uint8_t, 1024> readBuffer; ///< Storage retained until a pending read completes.
+    BytesBuffer received; ///< Completed input not yet drained by readAll().
+    boost::system::error_code receiveError; ///< Deferred terminal receive failure.
+    bool receiving = false; ///< Whether a completion should schedule another read.
+    bool readPending = false; ///< Prevents overlapping reads using the same buffer.
+    uint64_t inputGeneration = 0; ///< Epoch used to reject old-rate/cancelled input.
 
+    /// @brief Report a previously latched receive failure.
+    /// @throws boost::system::system_error The stored receive error is nonzero.
     void checkReceiveError() const
     {
       if (receiveError) throw boost::system::system_error(receiveError, "Serial reception");
     }
 
-    // Caller holds mutex. At most one operation uses readBuffer at any time.
+    /// @brief Schedule at most one read, retaining shared state in its callback.
+    /// @pre The caller holds mutex and the borrowed context is alive.
     void startRead()
     {
       if (!receiving || readPending || receiveError) return;
@@ -53,6 +72,10 @@ namespace pprzlink {
       readPending = true;
     }
 
+    /// @brief Commit a current-generation completion and schedule the next eligible read.
+    /// @param[in] error Completion result; cancellation is not latched as a receive failure.
+    /// @param[in] size Bytes completed into readBuffer.
+    /// @param[in] generation Input epoch captured when the operation was started.
     void finishRead(const boost::system::error_code &error, size_t size, uint64_t generation)
     {
       std::lock_guard lock(mutex);
@@ -67,6 +90,10 @@ namespace pprzlink {
       startRead(); // Includes a restart requested while cancellation was pending.
     }
 
+    /// @brief Read one native serial option while holding the state lock.
+    /// @tparam Option Default-constructible Asio serial option type.
+    /// @return Current port option.
+    /// @throws boost::system::system_error The native option query fails.
     template<class Option>
     Option getOption()
     {
@@ -76,6 +103,10 @@ namespace pprzlink {
       return value;
     }
 
+    /// @brief Set one native serial option while holding the state lock.
+    /// @tparam Option Asio serial option type.
+    /// @param[in] value New option value.
+    /// @throws boost::system::system_error The native option update fails.
     template<class Option>
     void setOption(const Option &value)
     {

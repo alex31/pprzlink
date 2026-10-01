@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file IvyLink.cpp
+ * @brief Ivy bindings, request correlation and callback lifetime management.
+ * @ingroup ivy
+ *
+ * Subscription ownership is retained behind legacy IDs or returned as scoped tokens. Request replies are one-shot and correlated by a process-wide sequence.
+ */
+
 #include <pprzlink/IvyLink.h>
 #include <pprzlink/IvyMessageCodec.h>
 #include <pprzlink/exceptions/pprzlink_exception.h>
@@ -24,7 +32,14 @@
 #include <unistd.h>
 
 namespace pprzlink {
+  /// @brief Internal conversion of native Ivy expected-results into C++ exceptions.
+  /// @ingroup internals
   namespace {
+    /// @brief Unwrap a native Ivy operation or throw its error with bus context.
+    /// @tparam T Native result value type, including void.
+    /// @param[in] result Move-owned expected value/error.
+    /// @return The successful value for non-void T; no value for void T.
+    /// @throws std::system_error The native operation reports an error.
     template<class T>
     T checked(std::expected<T, std::error_code> result)
     {
@@ -149,6 +164,9 @@ namespace pprzlink {
     checked(bus.send(ivy_codec::serializeMessage(msg)));
   }
 
+  /// @details Install the answer binding before sending. A process-wide sequence
+  /// and PID correlate the reply, and the callback unbinds its token before
+  /// invoking user code. Failure to send rolls back the installed subscription.
   long IvyLink::sendRequest(const Message &msg, messageCallback_t cb)
   {
     const auto &def = msg.getDefinition();

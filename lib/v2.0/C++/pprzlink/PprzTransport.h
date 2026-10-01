@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file PprzTransport.h
+ * @brief PPRZLINK v2 messages exchanged through an owned byte stream.
+ * @ingroup transports
+ *
+ * The transport borrows its dictionary, retains incomplete input and exposes complete messages together with frame statistics.
+ */
+
 #ifndef PPRZLINKCPP_PPRZTRANSPORT_H
 #define PPRZLINKCPP_PPRZTRANSPORT_H
 
@@ -40,27 +48,45 @@
 #include "Transport.h"
 #include "PprzFrameCodec.h"
 
+/// @brief Start delimiter of a PPRZLINK v2 serial frame.
 #define PPRZ_STX (0x99)
 
 namespace pprzlink {
   /// Frame Messages as PprzLink v2 bytes and decode incoming frames from its owned Device.
+  /// @ingroup transports
   class PprzTransport : public Transport {
   public:
+    /// @brief Own a byte stream and create an incremental frame decoder.
+    /// @param[in] device Non-null stream transferred to the transport.
+    /// @param[in] dictionary Borrowed schemas that must outlive the transport.
+    /// @throws std::invalid_argument The device pointer is null.
     PprzTransport(std::unique_ptr<Device> device, const MessageDictionary &dictionary);
 
     /// Discard noise, bad lengths and checksums; retain incomplete frames.
     /// Invalid payloads/unknown definitions throw after consuming their frame.
+    /// @return True if a complete message is cached for getMessage().
+    /// @throws std::exception Device I/O or payload decoding fails.
     bool hasMessage() override;
 
+    /// @brief Consume a cached message, polling the device if necessary.
+    /// @return Owned message, or null when no complete frame is available.
+    /// @throws std::exception Device I/O or payload decoding fails.
     std::unique_ptr<Message> getMessage() override;
 
+    /// @brief Encode and synchronously write one complete serial frame.
+    /// @param[in] msg Fully populated message compatible with the peer's XML.
+    /// @return Written frame bytes; no remote delivery acknowledgement is implied.
+    /// @throws std::exception Message validation, encoding or device I/O fails.
     size_t sendMessage(const Message &msg) override;
 
   protected:
+    /// @brief Drain device input, update counters and cache at most one complete message.
+    /// @return Whether a message is now cached.
+    /// @throws std::exception Device or payload errors, with counters updated before propagation.
     bool decodeMessage();
 
-    PprzFrameDecoder decoder;
-    std::unique_ptr<Message> currentMessage;
+    PprzFrameDecoder decoder; ///< Incremental decoder borrowing the same dictionary.
+    std::unique_ptr<Message> currentMessage; ///< Complete message awaiting consumption.
   };
 }
 #endif // PPRZLINKCPP_PPRZTRANSPORT_H

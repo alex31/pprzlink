@@ -1,9 +1,23 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+/**
+ * @file UdpTransport.cpp
+ * @brief UDP framing and per-datagram source tracking.
+ * @ingroup transports
+ *
+ * Multiple frames in one datagram retain its source. An incomplete trailing frame is discarded before receiving another datagram or peer.
+ */
+
 #include "UdpTransport.h"
 #include <array>
 
 namespace pprzlink {
+  /// @brief Internal conversion between value endpoints and native Asio endpoints.
+  /// @ingroup internals
   namespace {
+    /// @brief Parse a numeric endpoint without performing DNS lookup.
+    /// @param[in] address Numeric IP address and UDP port.
+    /// @return Asio endpoint selecting IPv4 or IPv6 from the parsed address.
+    /// @throws boost::system::system_error The address is not a supported numeric IP string.
     boost::asio::ip::udp::endpoint socketEndpoint(const UdpEndpoint &address)
     {
       return {boost::asio::ip::make_address(address.address), address.port};
@@ -21,6 +35,9 @@ namespace pprzlink {
     socket.non_blocking(true);
   }
 
+  /// @details Drain all decodable frames belonging to pendingPeer before reading
+  /// another datagram. Discard an incomplete datagram tail and bound each polling
+  /// call to 64 receive attempts, even under a stream of empty/invalid datagrams.
   std::optional<ReceivedMessage> UdpTransport::tryReceive()
   {
     std::array<uint8_t, 65536> bytes;

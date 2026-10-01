@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file MessageField.cpp
+ * @brief Fixed schema data sizes for fields.
+ * @ingroup messages
+ *
+ * Strings and dynamic arrays report zero fixed bytes; concrete field sizes are computed by the binary codec after values are supplied.
+ */
+
 #include <pprzlink/MessageField.h>
 #include <utility>
 

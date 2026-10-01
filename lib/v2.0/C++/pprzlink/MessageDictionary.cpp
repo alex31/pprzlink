@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file MessageDictionary.cpp
+ * @brief XML dictionary loading and bidirectional identifier lookup.
+ * @ingroup messages
+ *
+ * Duplicate class or message identifiers are rejected. Validation errors retain file, class, message and field context where available.
+ */
+
 #include <pprzlink/MessageDictionary.h>
 #include "detail/XmlReader.h"
 

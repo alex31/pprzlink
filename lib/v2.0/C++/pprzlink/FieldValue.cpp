@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file FieldValue.cpp
+ * @brief Text and array validation for populated fields.
+ * @ingroup messages
+ *
+ * String values are distinct from character arrays. Binary compatibility helpers delegate to the field codec rather than duplicating wire-format rules.
+ */
+
 #include <pprzlink/FieldValue.h>
 #include <pprzlink/BinaryCodec.h>
 

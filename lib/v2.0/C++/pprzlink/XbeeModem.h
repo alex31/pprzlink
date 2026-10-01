@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
+/**
+ * @file XbeeModem.h
+ * @brief Polled 802.15.4 AT initialization and baud-rate configuration.
+ * @ingroup xbee
+ *
+ * The application services device I/O and owns the AT dialogue exclusively. Optional steady-clock timestamps support deterministic polling.
+ */
+
 #ifndef PPRZLINKCPP_XBEEMODEM_H
 #define PPRZLINKCPP_XBEEMODEM_H
 
@@ -10,23 +18,29 @@
 #include <vector>
 
 namespace pprzlink {
+  /// @brief Settings for a polled 802.15.4 modem command-mode dialogue.
+  /// @ingroup xbee
   struct XbeeConfiguration {
-    uint16_t localAddress = 0x100;
-    std::optional<uint8_t> channel; // Unchanged unless specified; range 0x0c..0x17.
-    std::chrono::milliseconds guardTime{2000};
-    std::chrono::milliseconds responseTimeout{2000};
+    uint16_t localAddress = 0x100; ///< Radio MY address configured after baud verification/save.
+    std::optional<uint8_t> channel; ///< Optional CH channel in [0x0c, 0x17]; absent leaves it unchanged.
+    std::chrono::milliseconds guardTime{2000}; ///< Before/after +++ silence interval, in [1, 60000] ms.
+    std::chrono::milliseconds responseTimeout{2000}; ///< AT reply deadline, in [1, 60000] ms; does not bound writes.
     /// Detect the modem's baud rate, switch to this standard rate and save changes.
     /// Requires a SerialDevice. nullopt keeps the existing baud rate without probing.
+    /// Supported rates are 1200, 2400, 4800, 9600, 19200, 38400, 57600 and 115200.
     std::optional<unsigned int> targetBaudrate{57600};
   };
 
+  /// @brief Baud discovery and persistence result from successful initialization.
+  /// @ingroup xbee
   struct XbeeBaudrateInfo {
-    unsigned int detected;
-    unsigned int configured;
-    bool savedToFlash;
+    unsigned int detected; ///< Initial host rate at which the modem answered command-mode entry.
+    unsigned int configured; ///< Target host rate verified against the ATBD reply.
+    bool savedToFlash; ///< Whether the initializer received the successful ATWR reply.
   };
 
   /** Configure an 802.15.4 modem through UART AT commands.
+   * @ingroup xbee
    * Exclusively use the device during initialization; service its I/O loop and poll
    * regularly. No sleeps or owned thread. The default escape character '+' is assumed.
    * Writes use Device's synchronous contract; response deadlines do not bound writes.
@@ -34,19 +48,31 @@ namespace pprzlink {
    */
   class XbeeModem {
   public:
-    using Clock = std::chrono::steady_clock;
-    using TimePoint = Clock::time_point;
+    using Clock = std::chrono::steady_clock; ///< Monotonic clock used for guards and reply deadlines.
+    using TimePoint = Clock::time_point; ///< Real or test-injected timestamp on Clock's timeline.
 
+    /// @brief Validate settings and prepare the command sequence without performing I/O.
+    /// @param[in] configuration Channel, timing, MY address and optional autobaud target.
+    /// @param[in] now Initial timestamp, defining the first guard deadline.
+    /// @throws std::invalid_argument Unsupported baud target, channel or timing bounds.
     explicit XbeeModem(const XbeeConfiguration &configuration, TimePoint now = Clock::now());
 
     /// Returns true only after all replies, baud verification/save and final ATCN.
     /// Errors leave sends blocked. Only missing entry replies advance to another baud.
     /// Optional timestamps use steady_clock and allow deterministic timer tests.
+    /// @param[in,out] device Exclusively used AT byte stream; SerialDevice is required for autobaud.
+    /// @param[in] now Nondecreasing timestamp for guard/reply progression.
+    /// @return True when initialization is complete; false while a guard or reply is pending.
+    /// @throws std::runtime_error AT errors, timeouts, device incompatibility and I/O failures are latched with context.
     bool poll(Device &device, TimePoint now = Clock::now());
+    /// @brief Inspect whether the final command-mode exit succeeded.
+    /// @return True only in the successful terminal state.
     bool isReady() const noexcept { return stage == Stage::Ready; }
     /// Available after successful initialization with baud detection enabled.
+    /// @return Owned detected/configured/saved values, otherwise std::nullopt.
     std::optional<XbeeBaudrateInfo> getBaudrateInfo() const noexcept;
     /// Preserve API bytes received in the same serial read as the final OK.
+    /// @return Owned remaining binary input; subsequent calls return an empty buffer.
     BytesBuffer takeRemainingBytes();
 
   private:

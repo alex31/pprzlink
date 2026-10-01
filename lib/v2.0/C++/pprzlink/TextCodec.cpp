@@ -17,13 +17,32 @@
  *
  */
 
+/**
+ * @file TextCodec.cpp
+ * @brief Variant-aware formatting of scalar and array values.
+ * @ingroup codecs
+ *
+ * A temporary stream preserves formatting state. Character arrays are quoted; numeric array braces are reserved for diagnostic output.
+ */
+
 #include <pprzlink/TextCodec.h>
 #include <iomanip>
 
 namespace pprzlink {
+  /// @brief Internal field formatting without changing the caller stream's format state.
+  /// @ingroup internals
   namespace {
-    enum class TextFormat { Ivy, Debug };
+    /// @brief Array punctuation policy for wire text versus diagnostic text.
+    enum class TextFormat {
+      Ivy, ///< Comma-separated arrays without numeric array braces.
+      Debug ///< Diagnostic numeric/string arrays enclosed in braces.
+    };
 
+    /// @brief Append one scalar or string using the selected text policy.
+    /// @tparam T Stored scalar/string type.
+    /// @param[in,out] stream Temporary formatting stream.
+    /// @param[in] value Read-only value; int8/uint8 are promoted for numeric printing.
+    /// @param[in] format Quoting policy for strings and wire/diagnostic output.
     template<class T>
     void writeElement(std::ostream &stream, const T &value, TextFormat format)
     {
@@ -42,6 +61,11 @@ namespace pprzlink {
       }
     }
 
+    /// @brief Format a variant into a temporary stream, then append its text.
+    /// @param[in,out] stream Destination whose formatting flags/locale/precision remain unchanged.
+    /// @param[in] storage Read-only scalar or array alternative.
+    /// @param[in] format Array punctuation and string quoting policy.
+    /// @return The destination after appending the completed text.
     std::ostream &writeField(std::ostream &stream, const FieldValue::Storage &storage, TextFormat format)
     {
       // Keep fixed-point formatting local instead of modifying the caller's stream.

@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
+/**
+ * @file XbeeTransport.cpp
+ * @brief Radio frame encoding, validation and receive recovery.
+ * @ingroup xbee
+ *
+ * Radio addresses use network byte order while XML fields use their binary codec. Status callbacks run synchronously after their API frame is consumed.
+ */
+
 #include "XbeeTransport.h"
 #include "detail/MessagePayload.h"
 #include <algorithm>
@@ -7,14 +15,23 @@
 #include <utility>
 
 namespace pprzlink {
+  /// @brief Internal AP=1 envelope inspection, checksums and radio-address decoding.
+  /// @ingroup internals
   namespace {
-    constexpr uint8_t startByte = 0x7e;
-    constexpr uint8_t tx64 = 0x00, tx16 = 0x01;
-    constexpr uint8_t rx64 = 0x80, rx16 = 0x81;
-    constexpr uint8_t atResponse = 0x88, txStatus = 0x89, modemStatus = 0x8a;
-    constexpr size_t envelopeSize = 4; // Delimiter, two length bytes, checksum.
-    constexpr size_t maximumFrameDataSize = 14 + XbeeTransport::maximumRfPayloadSize;
+    constexpr uint8_t startByte = 0x7e; ///< AP=1 start delimiter.
+    constexpr uint8_t tx64 = 0x00, ///< Legacy TX with an eight-byte destination address.
+                      tx16 = 0x01; ///< Legacy TX with a two-byte destination address.
+    constexpr uint8_t rx64 = 0x80, ///< Legacy RX with an eight-byte source address.
+                      rx16 = 0x81; ///< Legacy RX with a two-byte source address.
+    constexpr uint8_t atResponse = 0x88, ///< API AT command response.
+                      txStatus = 0x89, ///< Legacy transmit status response.
+                      modemStatus = 0x8a; ///< Modem lifecycle/network indication.
+    constexpr size_t envelopeSize = 4; ///< Delimiter, two length bytes and checksum.
+    constexpr size_t maximumFrameDataSize = 14 + XbeeTransport::maximumRfPayloadSize; ///< Largest supported extended header plus RF bytes.
 
+    /// @brief Compute the AP=1 complement checksum of frame data.
+    /// @param[in] data Bytes after the length field and before the checksum.
+    /// @return Byte that makes the wrapping sum of data and checksum equal to 0xff.
     uint8_t checksum(std::span<const uint8_t> data)
     {
       uint8_t sum = 0;
@@ -22,13 +39,25 @@ namespace pprzlink {
       return static_cast<uint8_t>(0xff - sum);
     }
 
+    /// @brief Read the network-order API frame-data length.
+    /// @param[in] frame Input beginning at the delimiter and containing at least three bytes.
+    /// @return Declared frame-data bytes, excluding the API envelope.
     size_t frameDataSize(std::span<const uint8_t> frame)
     {
       return (static_cast<size_t>(frame[1]) << 8) | frame[2];
     }
 
-    enum class FrameStatus { Incomplete, BadLength, BadChecksum, Complete };
+    /// @brief Envelope outcome before decoding a radio indication.
+    enum class FrameStatus {
+      Incomplete, ///< More bytes are needed for the candidate frame.
+      BadLength, ///< Declared length is zero or exceeds the supported maximum.
+      BadChecksum, ///< Complete candidate fails checksum verification.
+      Complete ///< Candidate envelope is ready for radio/payload decoding.
+    };
 
+    /// @brief Validate a leading candidate within bounded radio frame sizes.
+    /// @param[in] frame Input beginning at the 0x7e delimiter.
+    /// @return Candidate completeness or its envelope rejection reason.
     FrameStatus inspectFrame(std::span<const uint8_t> frame)
     {
       if (frame.size() < 3) return FrameStatus::Incomplete;
@@ -41,6 +70,9 @@ namespace pprzlink {
       return FrameStatus::Complete;
     }
 
+    /// @brief Decode a two- or eight-byte big-endian radio address.
+    /// @param[in] bytes Address bytes supplied by a validated radio header.
+    /// @return Numeric address independent of the PPRZLINK message sender.
     uint64_t readAddress(std::span<const uint8_t> bytes)
     {
       uint64_t address = 0;
@@ -237,6 +269,9 @@ namespace pprzlink {
     }
   }
 
+  /// @details Consume status frames without exposing them as messages, retain
+  /// incomplete envelopes and resynchronize iteratively on invalid candidates.
+  /// Payload/callback exceptions consume their complete API frame before propagation.
   bool XbeeTransport::decodeMessage()
   {
     const auto received = device->readAll();

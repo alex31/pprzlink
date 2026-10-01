@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file IvyMessageCodec.h
+ * @brief Runtime XML schemas encoded as Ivy message text.
+ * @ingroup codecs
+ *
+ * Text codecs operate without a bus. Standard and legacy OCaml-compatible formats are distinct entry points.
+ */
+
 #ifndef PPRZLINKCPP_IVYMESSAGECODEC_H
 #define PPRZLINKCPP_IVYMESSAGECODEC_H
 
@@ -26,21 +34,52 @@
 
 /// Runtime XML message encoding/decoding, independent of an Ivy bus or event loop.
 namespace pprzlink::ivy_codec {
+  /// @brief Escape regex metacharacters so a string can be matched literally.
+  /// @param[in] text Sender or message-name text, not an existing regular expression.
+  /// @return Escaped text suitable for insertion into an Ivy regex.
   std::string escapeRegexp(std::string_view text);
+  /// @brief Remove one pair of outer double quotes, when present.
+  /// @param[in] text Quoted or unquoted text; backslash escapes are not interpreted.
+  /// @return An owned copy of the unquoted text.
   std::string unquote(std::string_view text);
   /// Message name and capturing groups for XML fields, followed by the end anchor.
+  /// @param[in] definition Schema selecting field types and capture count.
+  /// @return Regex body without a leading sender capture or start anchor.
+  /// @throws wrong_message_format An XML base type cannot be represented.
   std::string messageRegexp(const MessageDefinition &definition);
   /// Sender, message name and fields in Ivy wire format.
+  /// @param[in] message Populated message; fields are emitted in XML order.
+  /// @return Text containing sender, name and field values, without a newline.
+  /// @throws std::exception A declared field has no value or a formatting operation fails.
   std::string serializeMessage(const Message &message);
   /// OCaml-compatible XML display formats, including its unquoted empty strings.
+  /// @param[in] message Populated message whose field formats are checked before use.
+  /// @return Sender, name and fields in the legacy text representation.
+  /// @throws wrong_message_format An XML numeric display format is unsupported or too large.
+  /// @throws std::exception A declared field has no value or formatting fails.
   std::string serializeLegacyMessage(const Message &message);
   /// OCaml-style whitespace and quoted/pipe-delimited fields; numeric values remain checked.
+  /// @param[in] definition Expected schema copied into the result.
+  /// @param[in] sender Sender text stored separately from body.
+  /// @param[in] body Message name and fields, without the sender.
+  /// @return Complete message with a string sender identifier.
+  /// @throws std::exception Bad names, quoting, arity, numeric values or array sizes.
   Message parseLegacyMessageBody(const MessageDefinition &definition, std::string_view sender,
                                 std::string_view body);
   /// Decode captures supplied by a dynamic Ivy binding.
+  /// @param[in] definition Expected schema copied into the result.
+  /// @param[in] sender Sender capture; optional outer double quotes are removed.
+  /// @param[in] fields One capture per XML field, in schema order.
+  /// @return Populated message with a string sender identifier.
+  /// @throws std::exception Bad arity, types, counts or out-of-range/non-finite text numbers.
   Message parseFields(const MessageDefinition &definition, std::string_view sender,
                       std::span<const std::string_view> fields);
   /// Match and decode a message body (name and fields, without sender).
+  /// @param[in] definition Expected schema copied into the result.
+  /// @param[in] sender Sender text supplied separately from body.
+  /// @param[in] body Full message name and field text matched against messageRegexp().
+  /// @return Populated message with a string sender identifier.
+  /// @throws std::exception Regex mismatch or field parsing fails.
   Message parseMessageBody(const MessageDefinition &definition, std::string_view sender,
                            std::string_view body);
 }

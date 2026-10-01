@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file MessageDefinition.cpp
+ * @brief Validated XML message schemas and field lookup.
+ * @ingroup messages
+ *
+ * Parsing checks identifiers, duplicate field names and routing modes. Definitions preserve XML field order for binary encoding.
+ */
+
 #include <pprzlink/MessageDefinition.h>
 #include <pprzlink/exceptions/pprzlink_exception.h>
 #include "detail/XmlReader.h"

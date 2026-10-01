@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file FieldValue.h
+ * @brief XML-selected field storage and checked value conversions.
+ * @ingroup messages
+ *
+ * The stored variant matches the schema. Exact reads and explicit numeric conversions have separate contracts, including array size checks.
+ */
+
 #ifndef PPRZLINKCPP_FIELDVALUE_H
 #define PPRZLINKCPP_FIELDVALUE_H
 
@@ -36,11 +44,16 @@
 #include <vector>
 
 namespace pprzlink {
+  /// @brief Integral or floating-point C++ inputs accepted by checked conversion.
+  /// @ingroup messages
+  /// @tparam T Candidate numeric type, including char and bool.
   template<class T>
   concept Arithmetic = std::integral<T> || std::floating_point<T>;
 
   /// Array input: an iterable container with a value type and a size.
   /// std::string has its own overload to distinguish text from array elements.
+  /// @ingroup messages
+  /// @tparam Container Sized, const-iterable input with a value_type.
   template<class Container>
   concept FieldValueContainer =
     !std::same_as<Container, std::string> &&
@@ -51,6 +64,8 @@ namespace pprzlink {
     };
 
   /// Array output only needs clear/push_back; std::array has a separate overload.
+  /// @ingroup messages
+  /// @tparam Container Output type accepting elements of its declared value_type.
   template<class Container>
   concept FieldValueOutputContainer = !std::same_as<Container, std::string> &&
     requires(Container &container, typename Container::value_type element) {
@@ -59,12 +74,21 @@ namespace pprzlink {
     };
 
   namespace detail {
-    // Keep the receiver dependent until FieldValue is completely defined.
+    /// @brief Output types constructible and readable through a field's exact-read API.
+    /// @ingroup internals
+    /// @tparam Field Field-like type kept dependent until its definition is complete.
+    /// @tparam Output Default-constructible destination type.
     template<class Field, class Output>
     concept ReadableFieldValue = std::default_initializable<Output> &&
       requires(const Field &field, Output &output) { field.getValue(output); };
 
     /// Translate the XML base type into a C++ type in one place.
+    /// @ingroup internals
+    /// @tparam Visitor Callable with a templated nullary operator for every supported base type.
+    /// @param[in] type XML scalar base type.
+    /// @param[in] visitor Type-dispatch callable; invoked once with the selected C++ type.
+    /// @return The callable's result, preserving its declared reference/value category.
+    /// @throws std::logic_error The base type is invalid.
     template<class Visitor>
     decltype(auto) visitBaseType(BaseType type, Visitor &&visitor)
     {
@@ -88,8 +112,13 @@ namespace pprzlink {
   }
 
   /// A field definition and its actual value. The variant type follows the XML type.
+  /// @ingroup messages
+  /// Numeric writes check ranges and fractions before storing a value. Exact reads
+  /// require the XML-selected type; getValueAs() performs explicit numeric conversion.
+  /// String arrays can be held/formatted but have no PPRZLINK binary representation.
   class FieldValue {
   public:
+    /// @brief Scalar and array storage alternatives selected by the XML definition.
     using Storage = std::variant<
       char, int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, float, double, std::string,
       int64_t, uint64_t,
@@ -98,36 +127,74 @@ namespace pprzlink {
       std::vector<int64_t>, std::vector<uint64_t>,
       std::vector<float>, std::vector<double>, std::vector<std::string>>;
 
-    // A field cannot exist without both its definition and a value.
+    /// @brief Default construction is prohibited: a field needs a definition and a value.
     FieldValue() = delete;
 
     /// Convert an arithmetic scalar to the type declared by the field.
+    /// @tparam T Arithmetic input type.
+    /// @param[in] field Definition copied into this value.
+    /// @param[in] input Numeric scalar to convert to the XML-selected type.
+    /// @throws field_conversion_error A numeric conversion is fractional, non-finite for an integer, or out of range.
+    /// @throws std::logic_error A scalar is supplied to an array field.
     template<Arithmetic T>
     FieldValue(const MessageField &field, T input) : field(field), value(makeScalar(field, input)) {}
 
     /// Build a string or a char array; text is never parsed as a number.
+    /// @tparam T std::string input type.
+    /// @param[in] field String or character-array definition copied into this value.
+    /// @param[in] text Text bytes copied without encoding conversion.
+    /// @throws std::logic_error The schema is neither a scalar string nor a character array.
+    /// @throws std::length_error A fixed character array has a different extent.
     template<std::same_as<std::string> T>
     FieldValue(const MessageField &field, const T &text) : field(field), value(makeText(field, text)) {}
 
+    /// @brief Copy zero-terminated text using the string constructor's rules.
+    /// @tparam T char input element type.
+    /// @param[in] field String or character-array definition to copy.
+    /// @param[in] text Non-null, valid zero-terminated string.
+    /// @throws std::exception Schema or extent validation fails as for the string constructor.
     template<std::same_as<char> T>
     FieldValue(const MessageField &field, const T *text) : FieldValue(field, std::string(text)) {}
 
     /// Convert array elements and check the fixed size, when specified in XML.
+    /// @tparam Container Sized input container with a value_type.
+    /// @param[in] field Array definition copied into this value.
+    /// @param[in] input Elements converted individually to the XML base type.
+    /// @throws std::logic_error The schema is scalar or an element cannot be converted.
+    /// @throws std::length_error A fixed array has a different extent.
+    /// @throws field_conversion_error A numeric element fails checked conversion.
     template<FieldValueContainer Container>
     FieldValue(const MessageField &field, const Container &input)
       : field(field), value(makeArray(field, input)) {}
 
+    /// @brief Copy an arithmetic pointer/count range as an array field.
+    /// @tparam T Arithmetic source element type.
+    /// @param[in] field Array definition to copy.
+    /// @param[in] input Pointer to a valid range of size readable elements.
+    /// @param[in] size Number of input elements, not bytes.
+    /// @throws std::exception Array schema, extent or element conversion validation fails.
     template<Arithmetic T>
     FieldValue(const MessageField &field, const T *input, size_t size)
       : FieldValue(field, std::span<const T>(input, size)) {}
 
     /// Read the exact stored type. A mismatch throws std::bad_variant_access.
+    /// @tparam T Exact XML-selected arithmetic storage type.
+    /// @param[out] output Destination assigned only after the type check succeeds.
+    /// @throws field_type_mismatch The stored alternative differs from T.
     template<Arithmetic T>
     void getValue(T &output) const { output = stored<T>(); }
 
+    /// @brief Copy an exactly stored scalar string.
+    /// @tparam T std::string destination type.
+    /// @param[out] output Destination receiving the stored text.
+    /// @throws field_type_mismatch The field is not a scalar string.
     template<std::same_as<std::string> T>
     void getValue(T &output) const { output = stored<T>(); }
 
+    /// @brief Copy array elements into a clear/push_back output container.
+    /// @tparam Container Destination whose value_type exactly matches the stored elements.
+    /// @param[out] output Container cleared after the type check, then populated in order.
+    /// @throws field_type_mismatch The exact element type differs or the field is scalar.
     template<FieldValueOutputContainer Container>
     void getValue(Container &output) const
     {
@@ -137,6 +204,11 @@ namespace pprzlink {
     }
 
     /// A fixed output array must have exactly the stored number of elements.
+    /// @tparam T Exact stored element type.
+    /// @tparam Size Required destination extent.
+    /// @param[out] output Array populated after both type and length checks succeed.
+    /// @throws field_type_mismatch The exact element type differs or the field is scalar.
+    /// @throws std::length_error The stored extent differs from Size.
     template<class T, size_t Size>
     void getValue(std::array<T, Size> &output) const
     {
@@ -149,6 +221,9 @@ namespace pprzlink {
     }
 
     /// Return a scalar, string or container using the same rules as the output overloads.
+    /// @tparam T Default-constructible output type supported by getValue(T&).
+    /// @return An owned exact-type value or container.
+    /// @throws std::exception The corresponding exact-read type or extent check fails.
     template<class T>
       requires detail::ReadableFieldValue<FieldValue, T>
     [[nodiscard]] T getValue() const
@@ -160,6 +235,10 @@ namespace pprzlink {
 
     /// Explicit numeric conversion. Fractional-to-integer and out-of-range reads throw.
     /// Floating-point destinations follow normal rounding; this is not a lossless conversion API.
+    /// @tparam T Requested numeric destination type.
+    /// @return Checked numeric conversion without modifying the stored value.
+    /// @throws field_type_mismatch The stored value is text or an array.
+    /// @throws field_conversion_error Conversion is out of range or not an exact finite integer when required.
     template<Arithmetic T>
     [[nodiscard]] T getValueAs() const
     {
@@ -170,14 +249,28 @@ namespace pprzlink {
       }, value);
     }
 
+    /// @brief Borrow the copied field definition.
+    /// @return Definition reference valid for this FieldValue's lifetime.
     [[nodiscard]] const MessageField &getField() const { return field; }
+    /// @brief Borrow the XML type selecting the stored variant alternative.
+    /// @return Type reference valid for this FieldValue's lifetime.
     [[nodiscard]] const FieldType &getType() const { return field.getType(); }
+    /// @brief Borrow the field's XML name.
+    /// @return Name reference valid for this FieldValue's lifetime.
     [[nodiscard]] const std::string &getName() const { return field.getName(); }
     /// Read-only access for visitors; callers cannot change the stored type.
+    /// @return Variant reference valid until this FieldValue is replaced or destroyed.
     [[nodiscard]] const Storage &getValue() const { return value; }
 
     /// Compatibility entry points delegated to the binary codec.
+    /// @param[in,out] buffer Destination byte sequence to append to.
+    /// @return Number of bytes appended, including any count prefix.
+    /// @throws std::exception Binary type or count validation, or allocation, fails.
     size_t addToBuffer(BytesBuffer &buffer) const;
+    /// @brief Inspect the size of this concrete binary field encoding.
+    /// @return Bytes including any one-byte count prefix.
+    /// @throws std::length_error A dynamic count exceeds 255.
+    /// @throws std::logic_error Arrays of strings have no binary encoding.
     [[nodiscard]] size_t getByteSize() const;
 
   private:
@@ -241,6 +334,10 @@ namespace pprzlink {
 }
 
 /// Human-readable output with numeric int8/uint8 values; does not mutate the field.
+/// @ingroup codecs
+/// @param[in,out] stream Destination with preserved formatting flags.
+/// @param[in] value Populated field rendered in diagnostic syntax.
+/// @return The destination stream after appending the field.
 std::ostream& operator<<(std::ostream &stream, const pprzlink::FieldValue &value);
 
 #endif // PPRZLINKCPP_FIELDVALUE_H

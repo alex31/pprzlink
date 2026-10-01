@@ -1,0 +1,82 @@
+/**
+ * @mainpage pprzlink++ C++ API
+ *
+ * pprzlink++ loads message schemas from XML at runtime. A Message owns its
+ * definition and populated values; codecs turn those values into binary or
+ * text data, and transports exchange complete messages over a Device, UDP
+ * or Ivy. No generated C++ class is needed for each XML message.
+ *
+ * @section components Components
+ * - @ref messages defines schemas, checked values and message addressing.
+ * - @ref codecs encodes fields, PPRZLINK v2 frames and Ivy message text.
+ * - @ref transports provides byte streams, serial ports, framing and UDP.
+ * - @ref xbee provides XBee AP=1 framing and asynchronous AT initialization.
+ * - @ref ivy provides an optional independent Ivy bus and scoped subscriptions.
+ * - @ref errors describes the exceptions reported by the public API.
+ * - @ref internals documents shared validation and payload helpers.
+ *
+ * The CMake target `pprzlink::core` contains schemas and codecs;
+ * `pprzlink::io` adds operating-system I/O, and `pprzlink::ivy` adds the optional
+ * Ivy 3.18+ adapter. The aggregate targets remain available for compatibility.
+ *
+ * @section lifetimes Ownership and execution
+ * Declare MessageDictionary before any object borrowing it. Transports own
+ * their Device exclusively. BoostSerialPortDevice and UdpTransport borrow
+ * an Asio context that must outlive them. Service the context to progress
+ * asynchronous serial reads; calls to one transport must be serialized.
+ * Ivy callbacks run on the bus loop and need synchronization when sharing
+ * application data with another thread. Keep subscription tokens alive and
+ * finish external calls before destroying the objects they use.
+ *
+ * @section values Values and wire formats
+ * A field has no value until populated. Writes perform checked conversion
+ * to the XML type. Exact reads use the stored C++ type; numeric conversions
+ * must be requested explicitly. Binary frames carry identifiers and values,
+ * so both endpoints need compatible XML schemas and field order.
+ *
+ * @section examples Learning examples
+ * The repository's guide_d_utilisation.md walks through the public API.
+ * The `pty_agent` example runs the same sender/receiver at either end of a
+ * virtual serial pair. `link++ -socat start` creates interchangeable ports
+ * and `link++ -socat stop` removes them. These utilities are application
+ * examples; the library does not impose aircraft discovery or retry policy.
+ */
+
+/** @defgroup messages Message schemas and values
+ * XML definitions, exact reads, checked conversions and message addressing.
+ */
+/** @defgroup codecs Binary and text codecs
+ * Stateless encoding plus incremental PPRZLINK v2 frame decoding.
+ */
+/** @defgroup transports Devices and transports
+ * Byte-stream contracts, operating-system I/O and UDP messages.
+ */
+/** @defgroup xbee XBee radio transport
+ * AP=1 radio frames, status events, baud detection and AT initialization.
+ */
+/** @defgroup ivy Ivy bus adapter
+ * Independent buses, scoped subscriptions and request/answer helpers.
+ */
+/** @defgroup errors Exceptions
+ * Error categories preserving the standard C++ catch contracts.
+ */
+/** @defgroup internals Internal helpers
+ * Shared validation and payload functions; implementation details rather
+ * than an extension interface for application code.
+ */
+
+/** @namespace pprzlink
+ * @brief C++ message definitions, codecs, byte streams and transport adapters.
+ */
+/** @namespace pprzlink::binary
+ * @brief Little-endian scalar and XML field codecs.
+ */
+/** @namespace pprzlink::ivy_codec
+ * @brief Ivy text serialization, bindings and legacy OCaml-compatible formats.
+ */
+/** @namespace pprzlink::detail
+ * @brief Shared implementation helpers for checked values and wire payloads.
+ */
+/** @namespace pprzlink::detail::xml
+ * @brief XML element, attribute and identifier validation.
+ */

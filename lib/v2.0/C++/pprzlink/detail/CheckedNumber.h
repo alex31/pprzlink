@@ -1,4 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+/**
+ * @file CheckedNumber.h
+ * @brief Shared range-checked numeric conversions and type descriptions.
+ * @ingroup internals
+ *
+ * Integral destinations reject fractions and non-finite values. Floating-point conversions may round; same-type values retain their representation.
+ */
+
 #pragma once
 #include <pprzlink/exceptions/pprzlink_exception.h>
 #include <cmath>
@@ -10,6 +18,10 @@
 #include <type_traits>
 
 namespace pprzlink::detail {
+  /// @brief Describe a C++ value type for conversion diagnostics.
+  /// @ingroup internals
+  /// @tparam T Numeric, string or container type to describe.
+  /// @return Readable type name; containers append [] to their element description.
   template<class T>
   std::string valueTypeName()
   {
@@ -28,6 +40,13 @@ namespace pprzlink::detail {
 
   /// Checked numeric conversion shared by writes and explicit converted reads.
   /// Floating-point destinations may round; integer destinations require an exact integer.
+  /// @ingroup internals
+  /// @tparam To Arithmetic destination type.
+  /// @tparam From Arithmetic input type.
+  /// @param[in] input Original value; same-type conversion preserves it without range conversion.
+  /// @param[in] fieldName Diagnostic context included in a conversion error.
+  /// @return Checked conversion; floating-point destinations can round and preserve non-finite values.
+  /// @throws field_conversion_error A value is out of range, fractional or non-finite for an integer.
   template<class To, class From>
     requires std::is_arithmetic_v<To> && std::is_arithmetic_v<From>
   To checkedNumber(From input, std::string_view fieldName)

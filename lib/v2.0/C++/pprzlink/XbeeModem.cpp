@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
+/**
+ * @file XbeeModem.cpp
+ * @brief Guard-time and AT-response state machine with baud probing.
+ * @ingroup xbee
+ *
+ * Only a missing command-mode entry reply advances to the next candidate rate. Errors latch; baud verification and ATWR precede later MY/CH/AP changes.
+ */
+
 #include "XbeeModem.h"
 #include <algorithm>
 #include <array>
@@ -10,11 +18,17 @@
 #include <utility>
 
 namespace pprzlink {
+  /// @brief Internal legacy/S2C baud codes and ATBD reply validation.
+  /// @ingroup internals
   namespace {
-    // BD codes common to legacy S1 and S2C 802.15.4 firmware.
+    /// @brief Standard UART rates indexed by their legacy/S2C ATBD code.
     constexpr std::array<unsigned int, 8> standardBaudrates{
         1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200};
 
+    /// @brief Map a supported target rate to its ATBD code.
+    /// @param[in] rate One of the eight supported standard UART rates.
+    /// @return Index in standardBaudrates, suitable for an ATBD command.
+    /// @throws std::invalid_argument The requested rate is unsupported.
     unsigned int baudrateCode(unsigned int rate)
     {
       const auto found = std::ranges::find(standardBaudrates, rate);
@@ -24,6 +38,10 @@ namespace pprzlink {
       return static_cast<unsigned int>(found - standardBaudrates.begin());
     }
 
+    /// @brief Parse a complete hexadecimal ATBD response with an optional 0x prefix.
+    /// @param[in] text Modem response without its carriage-return terminator.
+    /// @return Parsed standard code or custom numeric rate.
+    /// @throws std::runtime_error The reply is empty, malformed or outside the unsigned range.
     unsigned int parseBaudrate(std::string_view text)
     {
       if (text.starts_with("0x") || text.starts_with("0X")) text.remove_prefix(2);
@@ -35,6 +53,10 @@ namespace pprzlink {
       return value;
     }
 
+    /// @brief Compare a modem ATBD value with the host rate used to discover it.
+    /// @param[in] code Standard ATBD index or a custom numeric rate.
+    /// @param[in] rate Host UART rate to verify.
+    /// @return Exact standard-rate match, or a supported custom value within five percent.
     bool matchesBaudrate(unsigned int code, unsigned int rate)
     {
       if (code < standardBaudrates.size()) return standardBaudrates[code] == rate;
@@ -191,6 +213,9 @@ namespace pprzlink {
     return false;
   }
 
+  /// @details Guard timing and reply parsing progress only when polled. A failed
+  /// entry attempt can advance the baud probe, but command/verification failures
+  /// latch immediately. Bytes following the final OK are retained for API decoding.
   bool XbeeModem::poll(Device &device, TimePoint now)
   {
     if (stage == Stage::Ready) return true;

@@ -51,6 +51,29 @@ The dictionary must outlive an Ivy link or transport that borrows it; a Message
 owns its own definition and values. The unused `Link` placeholder has been
 removed: applications use `IvyLink`, `PprzTransport` or `XbeeTransport` directly.
 
+## API documentation
+
+The library headers document schemas, checked values, parameters, return values,
+exceptions, ownership and threading. Source files also describe framing recovery,
+numeric/text parsing, serial cancellation and modem initialization algorithms.
+
+From the Paparazzi root, generate the HTML and XML reference with Doxygen 1.9.8+:
+
+```sh
+cmake -S sw/ext/pprzlink/lib/v2.0/C++ -B var/build/pprzlink-docs \
+  -DCMAKE_CXX_COMPILER=g++-13 -DPPRZLINK_BUILD_DOCS=ON \
+  -DPPRZLINK_WITH_IVY=OFF -DPPRZLINK_BUILD_LINK=OFF \
+  -DPPRZLINK_BUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF
+cmake --build var/build/pprzlink-docs --target pprzlink_docs
+```
+
+Open `var/build/pprzlink-docs/docs/html/index.html`. XML is generated under
+`docs/xml` in that build directory. All library `.h`/`.cpp` files are covered,
+including internal helpers and the optional Ivy adapter; tests and applications
+are outside this API reference. Documentation warnings fail the target and are
+recorded in `docs/warnings.log`. The same target can be enabled in an existing
+CMake build with `-DPPRZLINK_BUILD_DOCS=ON`.
+
 ## Build
 
 From this directory:

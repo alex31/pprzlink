@@ -17,16 +17,35 @@
  *
  */
 
+/**
+ * @file BinaryCodec.cpp
+ * @brief Binary field sizing, validation and encoding.
+ * @ingroup codecs
+ *
+ * Lengths and unsupported string arrays are checked before encoding. A local cursor keeps the caller offset unchanged when a field is truncated.
+ */
+
 #include <pprzlink/BinaryCodec.h>
 
 namespace pprzlink::binary {
+  /// @brief Internal binary extent and count validation.
+  /// @ingroup internals
   namespace {
+    /// @brief Determine whether this concrete value needs a one-byte count prefix.
+    /// @param[in] field Populated XML-typed field.
+    /// @return True for scalar strings or dynamic arrays, false for scalar numbers and fixed arrays.
     bool hasCount(const FieldValue &field)
     {
       const auto &type = field.getType();
       return !type.isArray() ? type.getBaseType() == BaseType::STRING : type.getArraySize() == 0;
     }
 
+    /// @brief Check a complete array body without overflowing count * elementSize.
+    /// @param[in] buffer Input binary bytes.
+    /// @param[in] offset Cursor at the first element.
+    /// @param[in] count Number of elements to read.
+    /// @param[in] elementSize Positive byte width of one element.
+    /// @throws std::out_of_range The cursor or array extent exceeds the remaining input.
     void checkRemaining(std::span<const uint8_t> buffer, size_t offset, size_t count, size_t elementSize)
     {
       if (offset > buffer.size() || count > (buffer.size() - offset) / elementSize) {
@@ -66,6 +85,9 @@ namespace pprzlink::binary {
     return size;
   }
 
+  /// @details Decode through a local cursor and construct the complete FieldValue
+  /// before changing offset. Fixed arrays use their schema extent; strings and
+  /// dynamic arrays read their count from the input.
   FieldValue readField(const MessageField &field, std::span<const uint8_t> buffer, size_t &offset)
   {
     auto cursor = offset;

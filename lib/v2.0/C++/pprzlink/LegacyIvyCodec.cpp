@@ -1,11 +1,27 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
+/**
+ * @file LegacyIvyCodec.cpp
+ * @brief OCaml-compatible Ivy formatting and tokenization.
+ * @ingroup codecs
+ *
+ * Only bounded, type-compatible numeric printf conversions are accepted from XML. The tokenizer supports quoted and pipe-delimited fields.
+ */
+
 #include "IvyMessageCodec.h"
 #include <cstdio>
 #include <regex>
 #include <sstream>
 
 namespace pprzlink::ivy_codec {
+  /// @brief Internal bounded formatting compatible with OCaml XML display formats.
+  /// @ingroup internals
   namespace {
+    /// @brief Format one number using a bounded, type-compatible printf conversion.
+    /// @tparam Number Stored arithmetic scalar type.
+    /// @param[in] value Read-only number to render.
+    /// @param[in] xmlFormat Optional numeric XML format; empty selects a type-appropriate default.
+    /// @return Formatted text with a maximum accepted rendered length of 4096 bytes.
+    /// @throws wrong_message_format Unsupported conversion, mismatched type or excessive output.
     template<class Number>
     std::string formatNumber(Number value, const std::string &xmlFormat)
     {
@@ -51,6 +67,12 @@ namespace pprzlink::ivy_codec {
       }
     }
 
+    /// @brief Apply legacy formatting to a numeric or string scalar.
+    /// @tparam Value Stored arithmetic/string type.
+    /// @param[in] value Read-only scalar value.
+    /// @param[in] format Numeric display format, ignored for strings.
+    /// @return Scalar text; strings containing spaces are quoted, including legacy empty-string behavior.
+    /// @throws wrong_message_format A numeric display format is invalid.
     template<class Value>
     std::string formatScalar(const Value &value, const std::string &format)
     {
@@ -61,6 +83,11 @@ namespace pprzlink::ivy_codec {
       }
     }
 
+    /// @brief Render an entire stored field using legacy element formatting.
+    /// @param[in] storage Read-only scalar, string or array alternative.
+    /// @param[in] format Optional numeric XML display format applied to elements.
+    /// @return Field text with quoted character arrays and comma-separated numeric arrays.
+    /// @throws wrong_message_format A numeric element cannot use the supplied display format.
     std::string formatField(const FieldValue::Storage &storage, const std::string &format)
     {
       return std::visit([&]<class Value>(const Value &value) -> std::string {

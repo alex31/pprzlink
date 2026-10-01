@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file IvyMessageCodec.cpp
+ * @brief Ivy regular expressions and checked field parsing.
+ * @ingroup codecs
+ *
+ * XML types determine capture arity. Numeric parsing checks ranges and rejects non-finite text values; fixed array lengths are checked by FieldValue.
+ */
+
 #include "IvyMessageCodec.h"
 #include "TextCodec.h"
 #include <charconv>
@@ -46,9 +54,14 @@ namespace pprzlink::ivy_codec {
     return std::string(text);
   }
 
+  /// @brief Internal runtime-typed numeric and array parsing.
+  /// @ingroup internals
   namespace {
-    // XML-defined messages have runtime types/arity, so bind_convert's fixed
-    // callback signature cannot describe their fields.
+    /// @brief Parse one complete checked numeric token, including legacy separators/bases.
+    /// @tparam T Exact XML-selected arithmetic destination type.
+    /// @param[in] text Complete token; integer prefixes 0x/0o/0b and underscore separators are supported.
+    /// @return A value within T's range; floating-point text must be finite.
+    /// @throws wrong_message_format Syntax, signedness, bounds or finite-number validation fails.
     template<class T>
     T parseNumber(std::string_view text)
     {
@@ -96,6 +109,12 @@ namespace pprzlink::ivy_codec {
       return value;
     }
 
+    /// @brief Decode a scalar or comma-separated numeric array into its XML field.
+    /// @tparam T Exact scalar element type.
+    /// @param[in,out] msg Message receiving the decoded value after validation.
+    /// @param[in] field Definition selecting scalar versus fixed/dynamic array behavior.
+    /// @param[in] text Complete scalar or array text.
+    /// @throws std::exception Numeric syntax/ranges, array extent or trailing comma validation fails.
     template<class T>
     void addNumericField(Message &msg, const MessageField &field, std::string_view text)
     {

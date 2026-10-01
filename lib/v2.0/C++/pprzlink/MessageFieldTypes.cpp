@@ -17,6 +17,14 @@
  *
  */
 
+/**
+ * @file MessageFieldTypes.cpp
+ * @brief XML type-name parsing and canonical type spelling.
+ * @ingroup messages
+ *
+ * Array extents must be positive decimal integers or an empty dynamic suffix. Size overflow and unsupported base names are rejected.
+ */
+
 #include "MessageFieldTypes.h"
 #include <pprzlink/exceptions/pprzlink_exception.h>
 #include <algorithm>
@@ -27,12 +35,16 @@
 #include <string_view>
 
 namespace pprzlink {
+  /// @brief Internal canonical base-type names and fixed widths.
+  /// @ingroup internals
   namespace {
+    /// @brief One entry in the base-type descriptor table.
     struct TypeInfo {
-      BaseType type;
-      std::string_view name;
-      size_t size;
+      BaseType type; ///< XML base-type enumerator.
+      std::string_view name; ///< Canonical lowercase XML spelling.
+      size_t size; ///< Fixed element bytes, or zero for a scalar string.
     };
+    /// @brief Supported names/widths in one table shared by parsing and diagnostics.
     constexpr std::array types{
       TypeInfo{BaseType::CHAR, "char", 1},
       TypeInfo{BaseType::INT8, "int8", 1},
@@ -48,6 +60,10 @@ namespace pprzlink {
       TypeInfo{BaseType::STRING, "string", 0}
     };
 
+    /// @brief Borrow the canonical descriptor for a valid base type.
+    /// @param[in] type Base type to resolve.
+    /// @return Static-lifetime table entry.
+    /// @throws std::logic_error The type is unknown or NOT_A_TYPE.
     const TypeInfo &typeInfo(BaseType type)
     {
       const auto found = std::ranges::find(types, type, &TypeInfo::type);
