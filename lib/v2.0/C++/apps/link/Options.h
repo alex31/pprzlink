@@ -30,6 +30,7 @@ namespace link_app {
     int pingPeriod = 5000;
     int aircraftTimeout = 5000;
     std::optional<int> channel;
+    std::optional<std::string> socatAction;
 
     Options();
     static std::expected<Options, std::string> parse(int argc, char **argv);

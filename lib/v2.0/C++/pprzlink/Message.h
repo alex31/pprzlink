@@ -23,10 +23,33 @@
 #include <pprzlink/FieldValue.h>
 #include <pprzlink/MessageDefinition.h>
 #include <pprzlink/exceptions/pprzlink_exception.h>
+#include <concepts>
 #include <map>
+#include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace pprzlink {
+  namespace detail {
+    // Named constraints keep errors on the caller's setField(), before expanding pairs.
+    template<class... Arguments>
+    concept EvenNumberOfFieldArguments = (sizeof...(Arguments) % 2 == 0);
+
+    template<class... Arguments>
+    struct FieldNameTypes : std::false_type {};
+
+    template<>
+    struct FieldNameTypes<> : std::true_type {};
+
+    template<class Name, class Value, class... Remaining>
+    struct FieldNameTypes<Name, Value, Remaining...>
+      : std::bool_constant<std::convertible_to<Name, std::string> &&
+                           FieldNameTypes<Remaining...>::value> {};
+
+    template<class... Arguments>
+    concept FieldNamesAreStrings = FieldNameTypes<Arguments...>::value;
+  }
+
   /// A copy of a message definition, its populated FieldValues and sender/receiver IDs.
   /// Create from a dictionary definition, populate fields, then send through a link/transport.
   class Message {
@@ -43,12 +66,31 @@ namespace pprzlink {
       setField(name, std::move(value));
     }
 
-    /// Set or replace a field. Invalid input leaves the previous value unchanged.
+    /// Set or replace a field and return this message for sending, without copying.
+    /// The returned reference is valid while this message lives.
+    /// Invalid input leaves the previous value unchanged.
     template<class ValueType>
-    void setField(const std::string &name, ValueType value)
+    const Message &setField(const std::string &name, ValueType value)
     {
       const auto &field = def.getField(name);
       fieldValues.insert_or_assign(name, FieldValue(field, value));
+      return *this;
+    }
+
+    /// Apply multiple name/value pairs from left to right, using the same checks.
+    /// Odd argument counts and non-string names are rejected at the call site.
+    /// Return this message by const reference after all pairs succeed.
+    /// If a pair throws, earlier pairs remain applied; the failing and subsequent
+    /// pairs are unchanged.
+    template<class ValueType, class... Remaining>
+      requires (sizeof...(Remaining) > 0) &&
+               detail::EvenNumberOfFieldArguments<Remaining...> &&
+               detail::FieldNamesAreStrings<Remaining...>
+    const Message &setField(const std::string &name, ValueType value,
+                            Remaining&&... remaining)
+    {
+      setField(name, std::move(value));
+      return setField(std::forward<Remaining>(remaining)...);
     }
 
     /// Exact-type reads. Missing definitions/values retain their distinct exceptions.

@@ -1,7 +1,8 @@
 # API pprzlink++ : simplification par les exemples
 
 Première itération réalisée le 29 septembre 2026. Les clients de référence sont
-un récepteur Ivy, un simulateur d'avion série et un enregistreur UDP. Ils utilisent
+un récepteur Ivy, un simulateur d'avion série, un enregistreur UDP et un émetteur
+de commande UDP. Ils utilisent
 uniquement les en-têtes publics de la bibliothèque. Leur répertoire peut être
 copié dans un autre projet et compilé avec le SDK installé.
 
@@ -10,10 +11,23 @@ copié dans un autre projet et compilé avec le SDK installé.
 | [IvyReceiver.cpp](pprzlink/examples/clients/IvyReceiver.cpp) | S'abonner, lire une altitude comme `double`, arrêter la boucle. L'abonnement est possédé par une variable locale ; le délai utilise encore l'API native Ivy. |
 | [SerialAircraft.cpp](pprzlink/examples/clients/SerialAircraft.cpp) | Ouvrir un port, publier une altitude, répondre à PING. L'application fournit et fait tourner son contexte Asio. |
 | [UdpRecorder.cpp](pprzlink/examples/clients/UdpRecorder.cpp) | Recevoir trois messages avec leur adresse source et leur taille. Aucun bus Ivy n'est démarré ni lié au programme. |
+| [UdpSettingSender.cpp](pprzlink/examples/clients/UdpSettingSender.cpp) | Remplir les deux champs d'une commande dans un seul `setField()`, puis envoyer son datagramme à un pair de test local. |
+| [PtyRequester.cpp](pprzlink/examples/clients/PtyRequester.cpp) et [PtyResponder.cpp](pprzlink/examples/clients/PtyResponder.cpp) | Échanger une requête et une altitude entre deux processus sur des ports virtuels, avec le XML du guide. |
+| [PtyAgent.cpp](pprzlink/examples/clients/PtyAgent.cpp) | Lancer le même agent aux deux extrémités : chaque processus publie et reçoit une altitude, sans rôle lié au port. |
 
-Ces exemples sont petits et bornés à dix secondes. Ils servent de clients
-exécutables de référence, pas de services complets de production.
+Ces exemples sont de petits clients exécutables de référence, pas des services
+complets de production. Les clients série/UDP/Ivy initiaux sont bornés à dix secondes.
 Utiliser le XML fourni avec un pair de test qui charge les mêmes définitions.
+
+Les deux exemples PTY utilisent `guide_messages.xml` et attendent jusqu'à
+60 secondes, pour permettre leur lancement manuel dans deux terminaux.
+`pty_agent` utilise le même XML et continue jusqu'à Ctrl+C. Lancez deux
+instances avec des identifiants différents, sur **Port A** et **Port B**
+indifféremment ; les deux processus envoient et reçoivent.
+`link++ -socat start` prépare leurs ports ; `link++ -socat stop` les supprime.
+Le [guide d'utilisation](guide_d_utilisation.md#essayer-deux-processus-sur-des-pseudo-terminaux)
+donne les commandes de compilation et de lancement. Ces clients se lient
+uniquement à `pprzlink::io` et peuvent également utiliser le SDK sans Ivy.
 
 ## Contrats retenus
 
@@ -58,6 +72,56 @@ try {
 ```
 
 `addField()` reste disponible et applique les mêmes contrôles que `setField()`.
+`setField()` accepte également plusieurs couples nom/valeur dans un seul appel :
+
+```cpp
+command.setField("ac_id", 42, "value", 123.5);
+```
+
+Les deux surcharges renvoient `const Message&` : une référence au même message,
+sans copie. Cela permet de renseigner les champs directement dans l'appel
+d'envoi :
+
+```cpp
+link.sendMessage(command.setField("value", 12.5f));
+link.sendMessage(command.setField("ac_id", 42, "value", 12.5f));
+```
+
+Le message doit avoir tous ses champs renseignés pour être envoyé. Si
+`setField()` lève une exception, `sendMessage()` n'est pas appelé. La référence
+retournée est empruntée au message et ne prolonge pas sa durée de vie.
+Les appels qui ignorent le retour continuent de fonctionner ; `addField()`
+conserve son retour `void`.
+
+L'appel doit contenir un nombre pair d'arguments, avec au moins un couple.
+Un nombre impair est refusé à la compilation. Chaque valeur peut avoir son
+propre type, y compris une chaîne ou un tableau, avec les mêmes contrôles XML
+que l'appel à deux arguments. Les programmes utilisant cet appel conservent
+leur comportement.
+
+Pour la partie variadique, les diagnostics de compilation citent les contraintes
+nommées `EvenNumberOfFieldArguments` si une valeur manque et
+`FieldNamesAreStrings` si une clé n'est pas convertible en `std::string`.
+La première clé est directement un paramètre `const std::string&` : son mauvais
+type provoque une erreur de conversion. Les erreurs renvoient à la ligne de
+l'appel, y compris lorsque la mauvaise clé est en fin de liste.
+
+| Appel incorrect | Diagnostic attendu |
+| --- | --- |
+| `message.setField("index", 7, "ac_id")` | `EvenNumberOfFieldArguments` non satisfaite : la valeur de `ac_id` manque. |
+| `message.setField("index", 7, 42, 12.5)` | `FieldNamesAreStrings` non satisfaite : le troisième argument est une clé entière. |
+| `message.setField("index", 7, "ac_id", 42, true, 12.5)` | Même contrainte : le cinquième argument est une clé booléenne. |
+
+Les noms réels des champs et leurs types XML sont connus à l'exécution. Une
+clé mal orthographiée, une chaîne fournie pour un champ numérique ou une valeur
+hors plage restent donc des erreurs d'exécution, même si l'appel est correct
+du point de vue des types C++.
+
+Les couples sont appliqués de gauche à droite. Si une validation échoue, les
+couples précédents restent appliqués ; le champ refusé et les suivants ne sont
+pas modifiés. Un nom répété prend la dernière valeur. Ces appels préparent
+seulement le message local : l'envoi reste un appel séparé à `sendMessage()`.
+
 Les éléments de tableaux sont contrôlés eux aussi. Les écritures hors plage,
 les flottants non finis vers un entier et les valeurs fractionnaires vers un
 entier lèvent `field_conversion_error`, dérivée de `std::out_of_range`.
@@ -171,7 +235,12 @@ ctest --test-dir build-gcc13 --output-on-failure
 ./build-gcc13/ivy_receiver pprzlink/examples/clients/client_messages.xml 127.255.255.255:2010
 ./build-gcc13/serial_aircraft pprzlink/examples/clients/client_messages.xml /dev/ttyUSB0
 ./build-gcc13/udp_recorder pprzlink/examples/clients/client_messages.xml 4242
+./build-gcc13/udp_setting_sender pprzlink/examples/clients/client_messages.xml 4242
 ```
+
+`udp_setting_sender` envoie une seule commande `CLIENT_SETTING` pour l'avion
+42, avec `value=12.5`, vers `127.0.0.1` au port indiqué. Un pair de test doit
+écouter ce port pour la recevoir. Ce message appartient au XML d'exemple.
 
 Construction sans Ivy, incluant les exemples série/UDP et leurs tests :
 
@@ -195,11 +264,33 @@ cmake -S /tmp/pprzlink-client-examples -B /tmp/pprzlink-client-build \
 cmake --build /tmp/pprzlink-client-build -j4
 ```
 
-`-DCLIENTS_WITH_IVY=OFF` construit les deux clients série/UDP sans rechercher
+`-DCLIENTS_WITH_IVY=OFF` construit les trois clients série/UDP sans rechercher
 Ivy. Le standard C++23 et les dépendances transitives proviennent des cibles
 installées ; le projet client ne les redéclare pas.
 
-## Validation de cette itération
+## Validation du remplissage multiple
+
+La validation du 29 septembre, après ajout de la surcharge de `setField()` et
+du client `UdpSettingSender`, couvre la compilation avec GCC 13.3 et les
+**19/19 tests avec Ivy** et **15/15 tests sans Ivy**. Le scénario comparatif
+de `link++` avec OCaml est inclus.
+Les tests vérifient le refus d'un nombre impair d'arguments, les conversions,
+l'ordre d'application et l'égalité des trames avec les appels individuels.
+
+Les trois clients série/UDP ont également été copiés hors du dépôt, compilés
+avec `CLIENTS_WITH_IVY=OFF` contre le SDK complet installé, puis exécutés.
+Le datagramme de `CLIENT_SETTING` est comparé aux octets attendus. Cette
+vérification utilise `/tmp/pprzlink-api/clients-variadic/` ; aucun répertoire
+du dépôt n'est utilisé comme chemin d'inclusion par ces clients.
+
+Le 30 septembre, les diagnostics ont été renforcés avec des contraintes
+nommées : **20/20 tests avec Ivy passent sous GCC 13.3**. Le nouveau test
+`field_arguments_compile` compile un cas valide puis cinq appels incorrects ;
+il vérifie le refus, la contrainte ou conversion indiquée, et la référence à
+la ligne de l'appel fautif. Les clés erronées au début, au milieu et en fin de
+liste sont couvertes.
+
+## Validation de la première itération
 
 - Ubuntu 24.04, GCC 13.3 : **19/19 tests avec Ivy**, dont les nouveaux contrôles
   de conversion, réception, UDP et les trois clients exécutés.

@@ -1,6 +1,6 @@
 add_library(pprzlink_agent STATIC
   Options.cpp AircraftRegistry.cpp IvyBridge.cpp
-  XbeeTransmitter.cpp LinkAgent.cpp)
+  XbeeTransmitter.cpp LinkAgent.cpp SocatSession.cpp)
 target_link_libraries(pprzlink_agent PUBLIC pprzlink++)
 target_include_directories(pprzlink_agent PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(pprzlink_agent PRIVATE -Wall -Wextra -Werror)

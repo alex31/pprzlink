@@ -18,6 +18,8 @@ Boost.System is header-only with the supported Boost versions.
 Start with the [public API examples and their usability notes](API_USAGE.md)
 for Ivy reception, an aircraft serial peer, or a UDP recorder. The examples can
 also be built as an independent project against the installed SDK.
+The [architecture guide (in French)](architecture.md) explains transport
+abstractions, XML message definitions, and complete-message reception and sending.
 
 ## Class roles
 
@@ -134,6 +136,25 @@ The agent bridges telemetry to Ivy, routes XML `forwarded`/`broadcasted` command
 tracks known aircraft, sends PING, receives PONG and publishes LINK_REPORT. It
 supports serial PPRZ/XBee, file/FIFO descriptors, UDP with per-aircraft peers,
 traffic output, local timestamps and redundant-link telemetry encapsulation.
+
+On Linux, `-socat start` creates two connected virtual serial ports using the
+`socat` executable on PATH. It prints **Port A** and **Port B**, then returns to
+the shell. Both ports are bidirectional and interchangeable: each program opens
+one of them. The socat process runs in the background until `-socat stop`:
+
+```sh
+./build/apps/link/link++ -socat start
+./build/apps/link/link++ -d /dev/pts/N -transport pprz -s 57600
+./build/apps/link/link++ -socat stop
+```
+
+Replace `/dev/pts/N` with either printed port. These management commands do
+not need a messages XML or an Ivy bus. There is one managed pair per user;
+repeating `start` prints the existing ports, and repeating `stop` is harmless.
+`stop` only terminates the process recorded by this helper and removes its PTYs.
+Virtual ports exchange raw bytes in both directions without emulating baud-rate
+timing. State is kept under `$XDG_RUNTIME_DIR/linkpp-socat`, or
+`/tmp/linkpp-socat-<uid>` when `XDG_RUNTIME_DIR` is unset.
 
 Unlike the diagnostic example, the compatible XBee launch uses a fixed baudrate
 and does **not** change or save the modem's baudrate. AT replies and deadlines

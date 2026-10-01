@@ -1,15 +1,89 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "TestSupport.h"
 #include <pprzlink/Message.h>
+#include <pprzlink/PprzFrameCodec.h>
 #include <cmath>
 #include <iostream>
 #include <limits>
 
 using namespace pprzlink;
 
+namespace {
+  template<class... Arguments>
+  concept CanSetFields = requires(Message &message, Arguments&&... arguments) {
+    message.setField(std::forward<Arguments>(arguments)...);
+  };
+
+  static_assert(CanSetFields<const char*, int>);
+  static_assert(CanSetFields<const char*, int, std::string, double>);
+  static_assert(CanSetFields<const char*, int, const char*, int, const char*, float>);
+  static_assert(std::same_as<decltype(std::declval<Message&>().setField("index", 7)), const Message&>);
+  static_assert(std::same_as<decltype(std::declval<Message&>().setField("index", 7, "ac_id", 42)), const Message&>);
+  static_assert(!CanSetFields<>);
+  static_assert(!CanSetFields<const char*>);
+  static_assert(!CanSetFields<const char*, int, const char*>);
+  static_assert(!CanSetFields<const char*, int, const char*, int, const char*>);
+  static_assert(!CanSetFields<int, int>);
+  static_assert(!CanSetFields<const char*, int, int, double>);
+  static_assert(!CanSetFields<const char*, int, const char*, int, bool, float>);
+  static_assert(!CanSetFields<const char*, int, const char*, int, const char*, float, int, double>);
+
+  void testMultipleFields()
+  {
+    tinyxml2::XMLDocument xml;
+    require(xml.Parse(R"(<message name="VALUES" id="1">
+      <field name="index" type="uint8"/>
+      <field name="ac_id" type="uint8"/>
+      <field name="value" type="float"/>
+      <field name="samples" type="int16[]"/>
+      <field name="label" type="string"/>
+    </message>)") == tinyxml2::XML_SUCCESS, "Multiple-field fixture parses");
+    const MessageDefinition definition(xml.RootElement(), 2);
+    const std::vector<int> samples{-1, 2, 300};
+    const std::string aircraftField = "ac_id";
+
+    Message individual(definition);
+    individual.setField("index", 7);
+    individual.setField(aircraftField, 42);
+    individual.setField("value", 12.5);
+    individual.setField("samples", samples);
+    individual.setField("label", "settings");
+
+    Message grouped(definition);
+    const auto &configured = grouped.setField("label", "settings", "samples", samples, "value", 12.5,
+                                              aircraftField, 42, "index", 7);
+    require(&configured == &grouped, "Grouped setter returns the original message by reference");
+    require(encodePprzFrame(configured) == encodePprzFrame(individual),
+            "Grouped scalar, array and string fields preserve the existing binary encoding and XML order");
+
+    require(&grouped.setField("index", 8) == &grouped,
+            "Single-field setter returns the original message by reference");
+    grouped.setField("index", 8, "ac_id", 43);
+    require(grouped.getField<uint8_t>("index") == 8 && grouped.getField<uint8_t>("ac_id") == 43 &&
+            grouped.getField<float>("value") == 12.5f, "Two pairs update only the requested fields");
+
+    expectException<field_conversion_error>([&] {
+      grouped.setField("value", 1.5, "index", 300, "ac_id", 44);
+    });
+    require(grouped.getField<float>("value") == 1.5f && grouped.getField<uint8_t>("index") == 8 &&
+            grouped.getField<uint8_t>("ac_id") == 43,
+            "A rejected pair preserves its old value, keeps earlier updates and stops later updates");
+
+    expectException<no_such_field>([&] {
+      grouped.setField("index", 9, "unknown", 1, "ac_id", 44);
+    });
+    require(grouped.getField<uint8_t>("index") == 9 && grouped.getField<uint8_t>("ac_id") == 43,
+            "Unknown names use the existing XML checks and stop subsequent pairs");
+
+    grouped.setField("index", 10, "index", 11);
+    require(grouped.getField<uint8_t>("index") == 11, "Repeated names use the last value");
+  }
+}
+
 int main()
 {
   try {
+    testMultipleFields();
     const MessageField byte("aircraft", "uint8");
     for (int invalid : {-1, 256, 300}) {
       const auto error = expectException<field_conversion_error>([&] { FieldValue ignored(byte, invalid); });

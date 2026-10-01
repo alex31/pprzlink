@@ -143,6 +143,14 @@ if(BUILD_TESTING)
     add_pprzlink_test(serialization SerializationTest.cpp)
     add_pprzlink_test(field_value FieldValueTest.cpp)
     add_pprzlink_test(field_conversion FieldConversionTest.cpp)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_test(NAME field_arguments_compile COMMAND ${Python3_EXECUTABLE}
+                 "${CMAKE_CURRENT_SOURCE_DIR}/pprzlink/tests/FieldArgumentsCompileTest.py"
+                 --compiler "${CMAKE_CXX_COMPILER}"
+                 --include-dirs "$<TARGET_PROPERTY:field_conversion_test,INCLUDE_DIRECTORIES>")
+        set_tests_properties(field_arguments_compile PROPERTIES TIMEOUT 60)
+    endif()
     add_pprzlink_test(receive ReceiveTest.cpp)
     add_pprzlink_test(udp_transport UdpTransportTest.cpp)
     target_link_libraries(udp_transport_test PRIVATE pprzlink::io)
@@ -172,12 +180,34 @@ if(BUILD_TESTING)
                  "${CMAKE_CURRENT_SOURCE_DIR}/pprzlink/tests/LinkParityTest.py"
                  --cpp $<TARGET_FILE:link++> --bus $<TARGET_FILE:link_test_bus> ${reference_args})
         set_tests_properties(link_agent PROPERTIES TIMEOUT 120)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_test(NAME link_socat COMMAND ${Python3_EXECUTABLE}
+                     "${CMAKE_CURRENT_SOURCE_DIR}/pprzlink/tests/SocatSessionTest.py"
+                     $<TARGET_FILE:link++>)
+            set_tests_properties(link_socat PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77)
+        endif()
     endif()
     if(UNIX)
         add_pprzlink_test(serial_device SerialDeviceTest.cpp)
         target_link_libraries(serial_device_test PRIVATE pprzlink::io)
         if(PPRZLINK_BUILD_EXAMPLES)
             find_package(Python3 REQUIRED COMPONENTS Interpreter)
+            set(pty_controller_args)
+            if(PPRZLINK_BUILD_LINK AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+                find_program(SOCAT_EXECUTABLE socat)
+                if(SOCAT_EXECUTABLE)
+                    list(APPEND pty_controller_args --controller $<TARGET_FILE:link++>)
+                endif()
+            endif()
+            add_test(NAME pty_peers COMMAND ${Python3_EXECUTABLE}
+                     "${CMAKE_CURRENT_SOURCE_DIR}/pprzlink/tests/PtyPeersTest.py"
+                     --requester $<TARGET_FILE:pty_requester> --responder $<TARGET_FILE:pty_responder>
+                     ${pty_controller_args})
+            set_tests_properties(pty_peers PROPERTIES TIMEOUT 20)
+            add_test(NAME pty_agents COMMAND ${Python3_EXECUTABLE}
+                     "${CMAKE_CURRENT_SOURCE_DIR}/pprzlink/tests/PtyAgentsTest.py"
+                     --agent $<TARGET_FILE:pty_agent> ${pty_controller_args})
+            set_tests_properties(pty_agents PROPERTIES TIMEOUT 30)
             add_test(NAME serial_messages COMMAND ${Python3_EXECUTABLE}
                      "${CMAKE_CURRENT_SOURCE_DIR}/pprzlink/tests/SerialMessagesTest.py"
                      $<TARGET_FILE:serial_messages>)
@@ -188,7 +218,8 @@ if(BUILD_TESTING)
             endif()
             add_test(NAME client_examples COMMAND ${Python3_EXECUTABLE}
                      "${CMAKE_CURRENT_SOURCE_DIR}/pprzlink/tests/ClientExamplesTest.py"
-                     --serial $<TARGET_FILE:serial_aircraft> --udp $<TARGET_FILE:udp_recorder> ${client_ivy_args})
+                     --serial $<TARGET_FILE:serial_aircraft> --udp $<TARGET_FILE:udp_recorder>
+                     --udp-setting $<TARGET_FILE:udp_setting_sender> ${client_ivy_args})
             set_tests_properties(client_examples PROPERTIES TIMEOUT 40)
         endif()
     endif()

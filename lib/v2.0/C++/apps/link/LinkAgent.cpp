@@ -4,10 +4,12 @@
 #include <pprzlink/IvyMessageCodec.h>
 #include <pprzlink/PosixFileDevice.h>
 #include <pprzlink/PprzTransport.h>
+#include <boost/system/system_error.hpp>
 #include <algorithm>
 #include <csignal>
 #include <format>
 #include <iostream>
+#include <stdexcept>
 #include <syncstream>
 
 namespace link_app {
@@ -58,7 +60,15 @@ namespace link_app {
     std::unique_ptr<pprzlink::Device> device;
     if (options.device.starts_with("/dev")) {
       using Serial = pprzlink::BoostSerialPortDevice;
-      auto serial = std::make_unique<Serial>(context, options.device);
+      std::unique_ptr<Serial> serial;
+      try {
+        serial = std::make_unique<Serial>(context, options.device);
+      } catch (const boost::system::system_error &error) {
+        throw std::runtime_error(std::format(
+          "Cannot open serial port '{}': {}.\n"
+          "Check that the device is connected and select its port with -d <port>.",
+          options.device, error.code().message()));
+      }
       serial->setBaudrate(Serial::Baudrate(std::stoul(options.baudrate)));
       serial->setDataBits(Serial::DataBits(8));
       serial->setParity(Serial::Parity(Serial::Parity::none));

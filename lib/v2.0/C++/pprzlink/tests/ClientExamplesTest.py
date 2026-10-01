@@ -52,6 +52,19 @@ def udp_recorder(executable, dictionary):
             process.wait()
 
 
+def udp_setting_sender(executable, dictionary):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+        receiver.bind(('127.0.0.1', 0))
+        receiver.settimeout(4)
+        process = subprocess.run([executable, dictionary, str(receiver.getsockname()[1])],
+                                 capture_output=True, text=True, timeout=4)
+        require(process.returncode == 0, process.stdout + process.stderr)
+        datagram, _ = receiver.recvfrom(1024)
+        expected = pprz(bytes([0, 42, 2, 43, 42]) + struct.pack('<f', 12.5))
+        require(datagram == expected, 'Grouped setting fields changed the expected PPRZ frame')
+        require('(13 bytes)' in process.stdout, process.stdout)
+
+
 def ivy_receiver(executable, bus, dictionary):
     domain = f'127.255.255.255:{free_port()}'
     peer = Process([bus, domain], dict(os.environ))
@@ -75,6 +88,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--serial', required=True)
     parser.add_argument('--udp', required=True)
+    parser.add_argument('--udp-setting')
     parser.add_argument('--ivy')
     parser.add_argument('--bus')
     args = parser.parse_args()
@@ -83,6 +97,9 @@ def main():
     print('Serial aircraft: altitude and PING/PONG passed', flush=True)
     udp_recorder(args.udp, dictionary)
     print('UDP recorder: concatenated frames and distinct peers passed', flush=True)
+    if args.udp_setting:
+        udp_setting_sender(args.udp_setting, dictionary)
+        print('UDP setting sender: grouped command fields passed', flush=True)
     if args.ivy:
         require(args.bus is not None, 'Ivy testing requires the test peer')
         ivy_receiver(args.ivy, args.bus, dictionary)

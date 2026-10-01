@@ -56,15 +56,14 @@ int main(int argc, char **argv)
       received.set_value(std::move(message));
     });
 
-    // 3. Create a sender and populate a message according to the XML types.
+    // 3. Create a sender and a message with its XML definition.
     pprzlink::IvyLink sender(dictionary, "example-sender-" + suffix, domain, true);
     pprzlink::Message outgoing(definition);
     outgoing.setSenderId(uint8_t{42});
-    outgoing.addField("altitude", 123.5f);
 
-    // 4. Send through the local Ivy bus, then read the received field.
+    // 4. Set the field and send through Ivy, then read the received field.
     waitForReceiver(sender, receiverName);
-    sender.sendMessage(outgoing);
+    sender.sendMessage(outgoing.setField("altitude", 123.5f));
     std::cout << "Sent: " << outgoing.toString() << '\n';
     if (reception.wait_for(5s) != std::future_status::ready) {
       throw std::runtime_error("Timed out waiting for the altitude message");

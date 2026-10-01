@@ -74,6 +74,11 @@ namespace link_app {
         else if (option == "-b") options.ivyBus = argument();
         else if (option == "-d") options.device = argument();
         else if (option == "-s") options.baudrate = argument();
+        else if (option == "-socat") {
+          options.socatAction = argument();
+          if (*options.socatAction != "start" && *options.socatAction != "stop")
+            throw std::invalid_argument("-socat expects start or stop");
+        }
         else if (option == "-transport") options.transport = argument();
         else if (option == "-ch") options.channel = integer(argument());
         else if (option == "-fg") options.trafficStatistics = true;
@@ -146,6 +151,7 @@ namespace link_app {
   -noac_info Disable ACINFO and ACINFO_LLA uplink
   -nouplink Disable uplink, including PING
   -s <baudrate> Default is 9600
+  -socat <start|stop> Manage a background socat pair of virtual serial ports (Linux)
   -ch <channel> Default does not change configuration
   -hfc Enable UART hardware flow control (CTS/RTS)
   -local_timestamp Add local timestamp to messages sent over Ivy

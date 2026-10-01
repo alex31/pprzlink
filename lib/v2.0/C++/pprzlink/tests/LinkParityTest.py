@@ -507,11 +507,29 @@ def radio(harness, extended=False):
         wire.close()
 
 
+def serial_open_errors(harness):
+    missing_device = f'/dev/{harness.directory.name}/missing-serial'
+    require(not Path(missing_device).exists(), 'Missing-device fixture already exists')
+    for device in [missing_device, '/dev/null']:
+        result = subprocess.run([harness.executable, '-d', device], env=harness.environment,
+                                text=True, capture_output=True, timeout=3)
+        require(result.returncode == 1, f'Serial failure exit code: {result.returncode}')
+        require(not result.stdout, f'Serial failure wrote to stdout: {result.stdout}')
+        require(device in result.stderr and 'Cannot open serial port' in result.stderr,
+                f'Serial diagnostic must identify the port: {result.stderr}')
+        require('-d <port>' in result.stderr and f'{harness.executable} --help' in result.stderr,
+                f'Serial diagnostic must explain how to select a port and get help: {result.stderr}')
+        require('boost/asio' not in result.stderr and '[system:' not in result.stderr,
+                f'Serial diagnostic exposed Boost implementation details: {result.stderr}')
+
+
 def cli(harness):
     result = subprocess.run([harness.executable, '-help'], env=harness.environment,
                             text=True, capture_output=True, timeout=3)
     require(result.returncode == 0, result.stderr)
     options = sorted(re.findall(r'^\s+(-[a-z0-9_-]+)\b', result.stdout, re.M))
+    # The virtual-port management command is an addition to the OCaml-compatible CLI.
+    options = [option for option in options if option != '-socat']
     require(len(options) == 26, f'Missing CLI options: {options}')
     codes = []
     for args in [['--help'], ['-unknown'], ['-udp_port'], ['-id', 'invalid'],
@@ -574,6 +592,8 @@ def main():
             for name in args.only or SCENARIOS:
                 print(f'{label}: {name}', flush=True)
                 results[label][name] = SCENARIOS[name](harness)
+                if label == 'cpp' and name == 'cli':
+                    serial_open_errors(harness)
                 if label == 'cpp' and name == 'command_error':
                     require(results[label][name]['recovers'], 'Invalid input stopped the C++ Ivy loop')
         if args.ocaml:
