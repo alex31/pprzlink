@@ -41,7 +41,7 @@ int main(int argc, char **argv)
         const auto &message = received->message;
         if (message.getDefinition().getName() != "GUIDE_ALTITUDE" ||
             message.getReceiverId() != 0 || std::get<uint8_t>(message.getSenderId()) != 42) continue;
-        std::cout << "Aircraft 42: " << message.getField<float>("altitude")
+        std::cout << "Aircraft 42: " << message.getFieldSI("altitude")
                   << " m (" << received->frameSize << " received bytes)\n";
         return 0;
       }

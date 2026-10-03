@@ -16,9 +16,28 @@ To build the docs locally:
 PPRZLINK libraries are available for the following programming languages: 
 
 -   [C](lib/v2.0/C)
+-   [C++](lib/v2.0/C++)
 -   [OCaml](lib/v2.0/ocaml)
 -   [Python](lib/v2.0/python)
 -   [Rust](https://github.com/paparazzi/pprzlink-rust)
+
+## C++ dependency submodule
+
+The C++ library builds its pinned LLNL/units dependency from
+`third_party/llnl_units`. Initialize it from the pprzlink repository root:
+
+```sh
+git submodule update --init third_party/llnl_units
+```
+
+Alternatively clone pprzlink with `--recurse-submodules`. When pprzlink is
+itself a Paparazzi submodule, a recursive submodule update in Paparazzi also
+initializes this dependency. Paparazzi's normal `make` already performs that
+recursive update through `libpprzlink.update` and `sw/ext/Makefile`; a separate
+initialization command is only needed when building pprzlink directly.
+CMake and the C++ Makefile build LLNL/units
+automatically; the C++ SDK installation includes it. See the
+[C++ usage guide](lib/v2.0/C++/guide_d_utilisation.md) for build instructions.
 
 ## License
 
@@ -288,4 +307,3 @@ Where `user_data` is a pointer to a structure that you may want to pass at init 
 Parse messages by calling this function in your mainloop:
 
     pprzlink_check_and_parse(&dev_rx, new_message);
-

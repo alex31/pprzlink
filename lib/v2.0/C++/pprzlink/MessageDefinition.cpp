@@ -29,6 +29,8 @@
 #include <pprzlink/exceptions/pprzlink_exception.h>
 #include "detail/XmlReader.h"
 #include <format>
+#include <charconv>
+#include <cmath>
 
 namespace pprzlink {
   MessageDefinition::MessageDefinition() : classId(0), id(0) {}
@@ -57,9 +59,30 @@ namespace pprzlink {
           if (!fieldNameToIndex.emplace(fieldName, fields.size()).second) {
             throw bad_message_file("Duplicate field name");
           }
-          const char *format = field->Attribute("format");
-          if (!format) format = field->Attribute("FORMAT");
-          fields.emplace_back(fieldName, type, format ? format : "");
+          const auto optionalAttribute = [&](const char *lowercase, const char *uppercase) {
+            // Keep format's original lowercase-first precedence when both forms exist.
+            const char *value = field->Attribute(lowercase);
+            if (!value) value = field->Attribute(uppercase);
+            return value;
+          };
+          const auto textAttribute = [&](const char *lowercase, const char *uppercase) {
+            const auto value = optionalAttribute(lowercase, uppercase);
+            return std::string(value ? value : "");
+          };
+          std::optional<double> coefficient;
+          if (const auto attribute = optionalAttribute("alt_unit_coef", "ALT_UNIT_COEF")) {
+            const std::string_view text(attribute);
+            double value = 0;
+            const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (error != std::errc{} || end != text.data() + text.size() ||
+                !std::isfinite(value) || value == 0.0) {
+              throw bad_message_file("Invalid alt_unit_coef: " + std::string(text));
+            }
+            coefficient = value;
+          }
+          fields.emplace_back(fieldName, type, textAttribute("format", "FORMAT"),
+                              textAttribute("unit", "UNIT"), textAttribute("alt_unit", "ALT_UNIT"),
+                              coefficient, name);
         } catch (const bad_message_file &error) {
           throw bad_message_file(std::format("field '{}': {}", fieldName, error.what()));
         }

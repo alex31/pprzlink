@@ -1,6 +1,8 @@
 # PprzLink C++
 
 The C++ library requires C++23, TinyXML2, Boost (Asio and Bimap) and CMake 3.20+.
+Its compiled [LLNL/units](https://github.com/LLNL/units) dependency is built from
+the pinned `third_party/llnl_units` submodule and installed with the SDK.
 The default build also includes Ivy **3.18 or newer** with its native C++ wrapper
 (`ivy-cpp`) and pkg-config. Set `PPRZLINK_WITH_IVY=OFF` to build without Ivy.
 Ubuntu 24.04 / GCC 13 is the minimum supported platform. The current sources
@@ -30,7 +32,8 @@ For example, `MessageField("altitude", "float")` describes a field, while its
 | Class or file | Responsibility |
 | --- | --- |
 | [`FieldType`](pprzlink/MessageFieldTypes.h) | XML scalar/array type, such as `float`, `int16[]` or `char[5]`. |
-| [`MessageField`](pprzlink/MessageField.h) | Field name and type, without a value. |
+| [`MessageField`](pprzlink/MessageField.h) | Field name, XML type/unit metadata and prepared explicit SI conversion, without a value. |
+| [`UnitAliases.cpp`](pprzlink/UnitAliases.cpp) | Editable Paparazzi-to-LLNL spellings/scales, including scoped rules and explicitly unsupported units. |
 | [`MessageDefinition`](pprzlink/MessageDefinition.h) | Message name, class/message IDs and ordered field definitions. |
 | [`MessageDictionary`](pprzlink/MessageDictionary.h) | Load definitions with TinyXML2 and look them up by name or IDs. |
 | [`FieldValue`](pprzlink/FieldValue.h) | Field definition and actual scalar/array value in a `std::variant`. |
@@ -75,6 +78,21 @@ recorded in `docs/warnings.log`. The same target can be enabled in an existing
 CMake build with `-DPPRZLINK_BUILD_DOCS=ON`.
 
 ## Build
+
+Initialize the LLNL/units submodule from the pprzlink root. It is pinned to
+`e71a1e2d0838ea6b5efbf8ea4e28a642f68849fa` (0.14.0 sources), the revision used
+for the SI API checks:
+
+```sh
+git submodule update --init third_party/llnl_units
+```
+
+CMake builds the compiled string parser as a private static dependency, with
+PIC and C++14 confined to LLNL's targets. Its tests, converter, web server and
+Python bindings are disabled. No separate LLNL installation is needed, and
+the installed SDK includes its library, headers, CMake package and notices.
+For distribution packaging, `-DPPRZLINK_USE_SYSTEM_UNITS=ON` selects an installed
+LLNL/units package (0.13+) instead; add its prefix to `CMAKE_PREFIX_PATH` if needed.
 
 From this directory:
 
@@ -125,6 +143,66 @@ a separate diagnostic tool.
 `make libpprzlink++` and `make install DESTDIR=/path/to/install` are also supported.
 Use the same `PKG_CONFIG_PATH`; `CXX`, `CPPFLAGS`, `CXXFLAGS`, `LDFLAGS`, and
 `OBJ_DIR` may be supplied to make. Both shared and static libraries are built.
+The Makefile also builds and installs LLNL from the submodule, keeping its
+build files under `OBJ_DIR/llnl_units`. `LLNL_UNITS_DIR` and
+`LLNL_UNITS_BUILD_DIR` can select other source/build locations. Make-based
+static library consumers also link `-lunits`; CMake targets carry this dependency.
+
+## Explicit SI field access
+
+`getField`/`setField` use XML units and retain their existing type/range checks.
+`getFieldAs<T>` changes only the numeric representation. To request unit
+conversion explicitly, use `getFieldSI`/`setFieldSI`:
+
+```cpp
+pprzlink::Message gps(dictionary.getDefinition("GPS"));
+gps.setFieldSI("alt", 123.456); // SI metres -> XML int32 millimetres.
+double metres = gps.getFieldSI("alt");
+int32_t millimetres = gps.getField<int32_t>("alt"); // 123456
+const auto& field = gps.getFieldDefinition("alt");
+// field.getUnit(), getAltUnit(), getAltUnitCoef(), getSIUnit(), canConvertSI()
+int32_t raw = field.fromSI<int32_t>(1.23456); // 1235 mm, nearest integer.
+double si = field.toSI(raw);                 // 1.235 m.
+```
+
+SI numbers are doubles: metres, seconds, radians (also for latitude/longitude),
+kelvins for absolute temperatures, and dimensionless ratios for percentages.
+Integer destinations always round to nearest, with ties away from zero. Range
+overflow throws without saturation or replacement. Numeric homogeneous arrays
+use `std::span<const double>` inputs and `std::vector<double>&` outputs.
+NaN/non-finite floating measurements retain their numeric meaning; integer
+writes reject them. A double cannot preserve all 64-bit integer values.
+
+Original unit strings and explicitly supplied coefficients are preserved.
+An explicit `alt_unit_coef` plus a supported `alt_unit` defines raw scaling and
+has priority over the alias scale, even when the XML coefficient is rounded.
+This also supports fixed-point fields without `unit`. Incomplete metadata,
+calibration codes, logarithmic levels and mixed-frame arrays remain readable
+through raw access; requesting SI conversion throws `field_unit_error`.
+Conversion never changes coordinate frames, altitude references or time epochs.
+
+Edit [UnitAliases.cpp](pprzlink/UnitAliases.cpp) to add a rule
+`{"XML spelling", "LLNL spelling", scale}` and rebuild. LLNL receives
+`XML_value * scale`; use an empty target to prohibit conversion. Optional
+message/field selectors disambiguate legacy spellings. LLNL types and its
+global registry are not exposed or modified by this API.
+
+Existing client source can adopt SI calls field by field. Rebuild the library
+and its clients: adding schema metadata changes the C++ class layout, so old
+binaries must not be used with the new shared library. `link++` keeps forwarding
+XML values; its routing IDs and byte/message counters are not SI quantities.
+See [the usage guide](guide_d_utilisation.md#convertir-explicitement-les-unités)
+for executable examples and the [API notes](API_USAGE.md#champs--unités-si-explicites)
+for the complete contract.
+
+The SI implementation was checked with GCC 13.3 and GCC 16.1. The full 25-test
+suite, including serial/UDP/Ivy clients and `link++`, passed with GCC 13.3 and
+the installed Ivy 3.18.3 wrapper. GCC 16 SI tests, the Make build without Ivy,
+installed-SDK clients and warning-free Doxygen generation were also checked.
+The system Ivy wrapper must be rebuilt for GCC 16 before using Ivy programs
+with that compiler, as noted above; the mismatched wrapper crashes at bus creation.
+The unit test uses the real repository XML as well as fixtures covering native
+wire bytes, scoped aliases, Celsius offsets, integer rounding, arrays and failures.
 Installed CMake consumers can use `find_package(pprzlink++ CONFIG REQUIRED)` and
 link `pprzlink++` or `pprzlink++_static`; dependencies and C++23 propagate.
 

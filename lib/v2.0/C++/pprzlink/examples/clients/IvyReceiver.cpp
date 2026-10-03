@@ -17,7 +17,7 @@ int main(int argc, char **argv)
     // Keep this subscription alive for as long as reception is wanted.
     auto altitude = link.subscribeMessage("CLIENT_ALTITUDE",
       [&](std::string sender, pprzlink::Message message) {
-        const double metres = message.getFieldAs<double>("altitude");
+        const double metres = message.getFieldSI("altitude");
         std::cout << "Aircraft " << sender << ": " << metres << " m\n";
         received = true;
         link.stop(); // This one-message example is done. Destruction happens after run().

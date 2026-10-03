@@ -8,8 +8,9 @@ copié dans un autre projet et compilé avec le SDK installé.
 
 | Exemple | Parcours et limite qu'il permet d'observer |
 | --- | --- |
-| [IvyReceiver.cpp](pprzlink/examples/clients/IvyReceiver.cpp) | S'abonner, lire une altitude comme `double`, arrêter la boucle. L'abonnement est possédé par une variable locale ; le délai utilise encore l'API native Ivy. |
-| [SerialAircraft.cpp](pprzlink/examples/clients/SerialAircraft.cpp) | Ouvrir un port, publier une altitude, répondre à PING. L'application fournit et fait tourner son contexte Asio. |
+| [SIUnits.cpp](pprzlink/examples/clients/SIUnits.cpp) | Consulter les unités XML/SI, arrondir une altitude vers l'entier XML, convertir les températures/tableaux et conserver l'encodage natif, sans I/O. |
+| [IvyReceiver.cpp](pprzlink/examples/clients/IvyReceiver.cpp) | S'abonner, lire une altitude en mètres par `getFieldSI()`, arrêter la boucle. L'abonnement est possédé par une variable locale ; le délai utilise encore l'API native Ivy. |
+| [SerialAircraft.cpp](pprzlink/examples/clients/SerialAircraft.cpp) | Ouvrir un port, publier une altitude en mètres par `setFieldSI()`, répondre à PING. L'application fournit et fait tourner son contexte Asio. |
 | [UdpRecorder.cpp](pprzlink/examples/clients/UdpRecorder.cpp) | Recevoir trois messages avec leur adresse source et leur taille. Aucun bus Ivy n'est démarré ni lié au programme. |
 | [UdpSettingSender.cpp](pprzlink/examples/clients/UdpSettingSender.cpp) | Remplir les deux champs d'une commande dans un seul `setField()`, puis envoyer son datagramme à un pair de test local. |
 | [PtyRequester.cpp](pprzlink/examples/clients/PtyRequester.cpp) et [PtyResponder.cpp](pprzlink/examples/clients/PtyResponder.cpp) | Échanger une requête et une altitude entre deux processus sur des ports virtuels, avec le XML du guide. |
@@ -48,6 +49,106 @@ uniquement à `pprzlink::io` et peuvent également utiliser le SDK sans Ivy.
 Les exemples et les tests de leurs échanges sont la référence pour faire
 évoluer ces contrats. Les conventions de routage, PING périodiques et rapports
 de station sol restent dans `link++`.
+
+## Champs : unités SI explicites
+
+Les méthodes existantes manipulent les unités XML. `getFieldAs<double>()`
+convertit le type numérique, sans convertir l'unité. L'accès SI est un appel
+explicite et utilise systématiquement des `double` :
+
+```cpp
+pprzlink::Message gps(dictionary.getDefinition("GPS"));
+gps.setFieldSI("alt", 123.456);   // Mètres -> int32 en millimètres.
+gps.setFieldSI("speed", 12.34);   // m/s -> uint16 en cm/s.
+double altitude_m = gps.getFieldSI("alt");
+int32_t altitude_mm = gps.getField<int32_t>("alt"); // 123456
+
+const auto& field = gps.getFieldDefinition("alt");
+std::cout << field.getUnit() << " -> " << field.getSIUnit(); // mm -> m
+int32_t native = field.fromSI<int32_t>(1.23456); // 1235
+double si = field.toSI(native);                 // 1.235 m
+```
+
+`getFieldDefinition()` est disponible avant même que la valeur soit définie,
+par nom ou indice. `getUnit()` et `getAltUnit()` renvoient les libellés XML
+originaux, ou une chaîne vide pour un attribut absent. `getAltUnitCoef()`
+renvoie un `std::optional<double>` contenant uniquement le coefficient écrit
+dans le XML. `getSIUnit()` indique l'unité effectivement utilisée par l'API SI ;
+une chaîne vide et `canConvertSI() == false` signalent une conversion indisponible.
+
+| Grandeur | Convention de l'API SI |
+| --- | --- |
+| Longueur, durée, vitesse | m, s, m/s |
+| Angles, latitude et longitude incluses | rad |
+| Température absolue | K ; 293.15 K devient 20 °C dans un champ Celsius |
+| Pourcentage | Rapport sans unité ; 0.5 devient 50 % |
+
+Un setter SI choisit le type du XML. Une destination entière est arrondie à
+l'entier le plus proche, avec les demi-valeurs en s'éloignant de zéro, puis
+contrôlée en plage. Il n'y a ni mode strict ni saturation. Le getter SI restitue
+la valeur stockée après cet arrondi. `fromSI<T>()`/`toSI(T)` convertissent un
+scalaire ou un élément de tableau sans modifier de message ; `T` doit être
+exactement le type de base XML. Les flottants peuvent arrondir vers `float` ;
+les grands entiers 64 bits peuvent perdre de la précision dans le `double` SI.
+
+Pour un tableau homogène :
+
+```cpp
+std::array<double, 3> position_m{1.0, 2.0, 3.0};
+message.setFieldSI("position", position_m); // Champ numérique XML de trois éléments.
+std::vector<double> position_si;
+message.getFieldSI("position", position_si);
+```
+
+Les surcharges scalaire et tableau conservent la forme et les contrôles de
+taille XML. Une conversion qui échoue ne remplace ni le champ, ni la destination
+d'une lecture. `setFieldSI()` renvoie `const Message&`, comme `setField()` ;
+on peut écrire `transport.sendMessage(message.setFieldSI("altitude", 123.5))`
+lorsque le message est complet. Les surcharges scalaires de `getFieldSI()`
+acceptent aussi un indice XML et un paramètre de sortie `double&`.
+
+LLNL/units est utilisé en interne, sans types LLNL dans les signatures publiques.
+Les règles éditables sont dans [UnitAliases.cpp](pprzlink/UnitAliases.cpp) :
+
+```cpp
+{"1e7deg", "deg", 1e-7},                  // XML -> LLNL : multiplier par 10^-7.
+{"deg_celsius", "degC"},                 // Alias simple, facteur implicite 1.
+{"C", "degC", 1.0, "ESC", "temperature"}, // Seulement ce message/champ.
+{"adc", ""},                             // Conversion interdite sans calibration.
+```
+
+Les règles les plus spécifiques ont priorité ; à spécificité égale, la première
+ligne gagne. Le facteur s'applique au nombre avant la conversion LLNL, notamment
+avant le décalage Celsius/kelvin. Si le XML fournit `alt_unit` et un coefficient
+explicite, ce coefficient prend priorité sur le facteur de la règle, sans être
+appliqué deux fois. Un coefficient sans unité reste exposé mais ne suffit pas
+à autoriser une conversion. Recompilez la bibliothèque après modification des règles.
+
+Une conversion indisponible lève `field_unit_error` avec le nom du message,
+du champ et l'unité XML. Les dépassements numériques lèvent
+`field_conversion_error`. Les NaN de mesures flottantes se propagent ; ils ne
+sont pas acceptés vers des entiers. Les repères, références d'altitude et epochs
+ne sont pas transformés. `GROUND_REF.pos`, dont les unités varient selon `frame`,
+reste à traiter dans le code applicatif.
+
+La construction de pprzlink compile LLNL/units depuis son sous-module épinglé
+et l'installation du SDK inclut cette dépendance. Les clients et `link++`
+utilisent ce même SDK, sans installation séparée de LLNL.
+Leurs appels existants gardent leurs unités XML ; les lectures/écritures SI sont
+adoptables localement pour les champs dont `canConvertSI()` est vrai. Les
+identifiants et commandes sans unité physique passent par l'API native. Le relais
+de `link++` conserve les valeurs XML et les rapports de compatibilité OCaml.
+La nouvelle disposition des classes exige de recompiler les clients, et pas
+seulement de remplacer leur bibliothèque partagée.
+
+Les exemples série, PTY et Ivy ont adopté l'accès SI pour leurs altitudes.
+Les tests lancent aussi les mêmes clients série/Ivy avec une altitude XML
+`int32` en millimètres : l'entrée et l'affichage restent en mètres.
+L'enregistreur UDP conserve les valeurs XML pour ses sorties de diagnostic ;
+le réglage générique conserve son accès natif car son unité est indéterminée.
+Dans `link++`, les accès aux champs sont utilisés pour le routage et le relais.
+Les rapports `LINK_REPORT` gardent leur calcul/formatage compatible OCaml en
+double, plutôt que d'introduire une conversion vers les floats de leur schéma.
 
 ## Champs : conversions et erreurs explicites
 
@@ -182,7 +283,7 @@ du datagramme pour éviter de mélanger deux émetteurs.
 ```cpp
 auto subscription = link.subscribeMessage("CLIENT_ALTITUDE",
     [](std::string sender, pprzlink::Message message) {
-        const double altitude = message.getFieldAs<double>("altitude");
+        const double altitude = message.getFieldSI("altitude"); // Mètres SI.
         // Traiter altitude et sender.
     });
 ```
@@ -203,7 +304,7 @@ introduit au-dessus de celui d'Ivy.
 
 | Composant CMake | Contenu |
 | --- | --- |
-| `pprzlink::core` | XML, messages, codecs, framing PPRZ/XBee et interface abstraite Device. TinyXML2 et en-têtes Boost ; aucune dépendance Ivy. |
+| `pprzlink::core` | XML, messages, conversions SI LLNL/units, codecs, framing PPRZ/XBee et interface abstraite Device. TinyXML2 et en-têtes Boost ; aucune dépendance Ivy. |
 | `pprzlink::io` | Série Boost.Asio, fichiers POSIX et UDP ; dépend de `core` et des threads. |
 | `pprzlink::ivy` | IvyLink ; dépend de `core`, Ivy C++ et des threads. |
 

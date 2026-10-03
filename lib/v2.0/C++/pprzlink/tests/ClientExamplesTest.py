@@ -6,15 +6,18 @@ from pathlib import Path
 import socket
 import struct
 import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
 from LinkParityTest import Process, SerialWire, free_port, pprz, require
 
 
-def serial_aircraft(executable, dictionary):
+def serial_aircraft(executable, dictionary, altitude_payload=None):
     wire = SerialWire()
     process = subprocess.Popen([executable, dictionary, wire.path], stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True)
     try:
-        altitude = bytes([42, 0, 1, 42]) + struct.pack('<f', 123.5)
+        payload = altitude_payload if altitude_payload is not None else struct.pack('<f', 123.5)
+        altitude = bytes([42, 0, 1, 42]) + payload
         require(wire.frame(4) == altitude, 'Aircraft example did not send its altitude')
         wire.inject(bytes([0, 42, 2, 8]))
         require(wire.frame(4) == bytes([42, 0, 1, 5]), 'Aircraft example did not answer PING')
@@ -65,7 +68,7 @@ def udp_setting_sender(executable, dictionary):
         require('(13 bytes)' in process.stdout, process.stdout)
 
 
-def ivy_receiver(executable, bus, dictionary):
+def ivy_receiver(executable, bus, dictionary, encoded_altitude='123.5'):
     domain = f'127.255.255.255:{free_port()}'
     peer = Process([bus, domain], dict(os.environ))
     process = None
@@ -74,7 +77,7 @@ def ivy_receiver(executable, bus, dictionary):
         process = subprocess.Popen([executable, dictionary, domain], stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, text=True)
         peer.wait(lambda text: text == 'ivy-receiver-example ready')
-        peer.send('42 CLIENT_ALTITUDE 123.5')
+        peer.send(f'42 CLIENT_ALTITUDE {encoded_altitude}')
         output, errors = process.communicate(timeout=4)
         require(process.returncode == 0 and 'Aircraft 42: 123.5 m' in output, output + errors)
     finally:
@@ -103,7 +106,22 @@ def main():
     if args.ivy:
         require(args.bus is not None, 'Ivy testing requires the test peer')
         ivy_receiver(args.ivy, args.bus, dictionary)
-        print('Ivy receiver: scoped subscription and converted field read passed', flush=True)
+        print('Ivy receiver: scoped subscription and SI field read passed', flush=True)
+
+    # Run the same applications with another wire representation. SI call sites
+    # still provide/display metres while XML selects int32 millimetres.
+    with tempfile.TemporaryDirectory(prefix='pprzlink-client-si-') as directory:
+        xml = ET.parse(dictionary)
+        field = xml.find(".//message[@name='CLIENT_ALTITUDE']/field[@name='altitude']")
+        require(field is not None, 'Altitude definition missing from example XML')
+        field.set('type', 'int32')
+        field.set('unit', 'mm')
+        millimetres = str(Path(directory) / 'messages.xml')
+        xml.write(millimetres, encoding='utf-8', xml_declaration=True)
+        serial_aircraft(args.serial, millimetres, struct.pack('<i', 123500))
+        if args.ivy:
+            ivy_receiver(args.ivy, args.bus, millimetres, '123500')
+        print('SI clients: unchanged metre inputs/output with XML int32 millimetres passed', flush=True)
 
 
 if __name__ == '__main__':

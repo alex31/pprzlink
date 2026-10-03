@@ -20,6 +20,7 @@ Le parcours est le suivant :
 1. [Préparer un projet](#1-préparer-un-projet).
 2. [Créer et lire un premier message](#2-créer-et-lire-un-premier-message).
 3. [Remplir plusieurs champs et choisir les bons types](#3-remplir-plusieurs-champs-et-choisir-les-bons-types).
+   Les [conversions SI explicites](#convertir-explicitement-les-unités) permettent aussi de travailler en mètres, radians et kelvins.
 4. [Manipuler des tableaux et du texte](#4-manipuler-des-tableaux-et-du-texte).
 5. [Encoder puis décoder sans matériel](#5-encoder-puis-décoder-sans-matériel).
 6. [Échanger des messages en UDP](#6-échanger-des-messages-en-udp).
@@ -34,13 +35,14 @@ Le parcours est le suivant :
 
 ### Construire la bibliothèque
 
-La bibliothèque demande C++23, CMake 3.20 ou plus, TinyXML2 et Boost. La
+La bibliothèque demande C++23, CMake 3.20 ou plus, TinyXML2 et Boost.
+LLNL/units est fourni comme sous-module et compilé avec pprzlink. La
 plateforme minimale prise en charge par cette branche est Ubuntu 24.04 avec
 GCC 13. Sous Ubuntu 24.04, les dépendances du début de ce guide s'installent
 avec :
 
 ```sh
-sudo apt install g++-13 cmake libtinyxml2-dev libboost-dev
+sudo apt install git g++-13 cmake libtinyxml2-dev libboost-dev
 ```
 
 Ivy sera ajouté à l'étape 8. Commencez avec les commandes suivantes **à la
@@ -49,6 +51,8 @@ racine du dépôt pprzlink** :
 ```sh
 export PPRZLINK_CPP="$PWD/lib/v2.0/C++"
 export PPRZLINK_ATELIER=/tmp/pprzlink-guide
+
+git submodule update --init third_party/llnl_units
 
 cmake -S "$PPRZLINK_CPP" -B "$PPRZLINK_ATELIER/build-lib" \
   -DCMAKE_CXX_COMPILER=g++-13 \
@@ -64,7 +68,17 @@ mkdir -p "$PPRZLINK_ATELIER/projet"
 cd "$PPRZLINK_ATELIER/projet"
 ```
 
-Le répertoire `sdk` contient les en-têtes et les bibliothèques installés.
+Le répertoire `sdk` contient les en-têtes, bibliothèques et fichiers CMake
+installés, y compris LLNL/units et son parseur compilé. Le sous-module
+`third_party/llnl_units` est fixé à la révision `e71a1e2` (sources 0.14.0).
+La compilation et l'installation séparées de LLNL ne sont pas nécessaires.
+Un clone `--recurse-submodules` ou une mise à jour récursive depuis Paparazzi
+initialise également cette dépendance. Le `make` normal de Paparazzi le fait
+déjà via `libpprzlink.update` : `sw/ext/Makefile` exécute
+`git submodule update --init --recursive sw/ext/pprzlink`. La commande manuelle
+ci-dessus concerne la construction directe de pprzlink décrite dans cet atelier.
+Le README décrit l'option facultative
+`PPRZLINK_USE_SYSTEM_UNITS` pour utiliser un paquet LLNL déjà installé.
 Le répertoire `projet` accueillera votre programme. `/tmp` convient à cet
 atelier ; choisissez un autre emplacement si vous souhaitez le conserver.
 
@@ -286,6 +300,136 @@ fractionnaire. Les conversions vers un flottant peuvent en revanche arrondir.
 `getFieldAs()` ne convertit pas les tableaux et ne transforme pas un texte
 comme `"12.5"` en nombre.
 
+### Convertir explicitement les unités
+
+`getField()` et `setField()` manipulent les valeurs dans les unités du XML.
+`getFieldAs<double>()` change leur type numérique, pas leur unité. Pour fournir
+ou récupérer une grandeur SI, appelez les nouvelles méthodes :
+
+```cpp
+altitude.setFieldSI("altitude", 123.5); // Mètres SI -> float XML, ici déjà en mètres.
+double altitude_si_m = altitude.getFieldSI("altitude");
+std::cout << altitude_si_m << " m\n";
+```
+
+Ces appels utilisent un `double` pour la valeur SI. L'unité SI est toujours
+cohérente : mètres, secondes, mètres/seconde, radians pour les angles (latitude
+et longitude incluses), kelvins pour les températures absolues. Les pourcentages
+sont des rapports sans unité : une entrée SI de `0.5` représente `50 %`.
+Le setter choisit le type de stockage déclaré par le champ XML.
+
+Les métadonnées sont consultables avant même de remplir un message :
+
+```cpp
+const auto& info = altitude.getFieldDefinition("altitude");
+std::cout << "XML : " << info.getUnit() << "; alternative : " << info.getAltUnit() << '\n';
+if (auto coefficient = info.getAltUnitCoef()) {
+    std::cout << "Coefficient XML explicite : " << *coefficient << '\n';
+}
+std::cout << "SI : " << info.getSIUnit()
+          << "; conversion disponible : " << std::boolalpha << info.canConvertSI() << '\n';
+```
+
+La définition peut aussi être récupérée par indice. Les métadonnées restent
+empruntées au message ; sa destruction ou son remplacement invalide leurs références.
+
+Pour essayer une conversion sans modifier de message, ajoutez `<cstdint>` et :
+
+```cpp
+const pprzlink::MessageField distance("distance", "int32", {}, "mm");
+int32_t millimetres = distance.fromSI<int32_t>(1.23456); // 1235 mm.
+double distance_si_m = distance.toSI(millimetres);      // 1.235 m.
+std::cout << millimetres << " mm = " << distance_si_m << " m\n";
+```
+
+`fromSI<T>()` exige le type numérique exact du XML, comme `getField<T>()`.
+Les destinations entières sont toujours arrondies à l'entier le plus proche,
+avec les demi-valeurs en s'éloignant de zéro. Le getter SI restitue la valeur
+réellement stockée après cet arrondi. Une valeur hors plage lève
+`field_conversion_error`, sans saturation. Une écriture qui échoue conserve
+la valeur précédente. Il n'y a pas de mode strict à sélectionner.
+
+Les flottants peuvent arrondir vers `float` et conserver des NaN de mesure.
+Les écritures vers des entiers refusent les valeurs non finies. Le `double` SI
+ne permet pas une lecture exacte de tous les grands entiers 64 bits ; utilisez
+le getter natif lorsque l'exactitude de ces entiers est nécessaire.
+
+Pour un tableau dont tous les éléments portent la même unité, l'entrée est un
+`std::span<const double>` (également construit depuis `std::array` ou `std::vector`)
+et la sortie un `std::vector<double>&` :
+
+```cpp
+// Avec un champ XML : <field name="position" type="int16[3]" unit="cm"/>
+std::array<double, 3> position_m{1.0, -2.0, 3.0};
+message.setFieldSI("position", position_m); // Stocke 100, -200, 300 en int16.
+std::vector<double> position_si;
+message.getFieldSI("position", position_si); // Restitue 1.0, -2.0, 3.0 m.
+```
+
+Ajoutez `<array>` et `<vector>` pour cet extrait. Les longueurs fixes restent
+vérifiées. Si un élément échoue, ni le champ entier ni le tableau de sortie
+d'une lecture ne sont remplacés.
+
+L'exemple autonome [SIUnits.cpp](pprzlink/examples/clients/SIUnits.cpp) fournit
+ce XML et vérifie aussi l'encodage puis le décodage natif. Il se lance sans
+matériel ni réseau :
+
+```sh
+"$PPRZLINK_ATELIER/build-lib/si_units"
+```
+
+Vous devez notamment voir `1235 mm = 1.235 m` et `20 Celsius = 293.15 K`.
+
+### Modifier les conventions Paparazzi
+
+LLNL/units est utilisé dans la bibliothèque ; l'application ne manipule aucun
+type LLNL. La table de correspondance est séparée dans
+[UnitAliases.cpp](pprzlink/UnitAliases.cpp). Sa syntaxe est :
+
+```cpp
+{"1e7deg", "deg", 1e-7},                   // Nombre XML * 10^-7 -> degrés LLNL.
+{"deg_celsius", "degC"},                  // Alias simple, facteur 1.
+{"C", "degC", 1.0, "ESC", "temperature"}, // Alias limité à ce message et ce champ.
+{"adc", ""},                              // Pas de conversion sans calibration.
+```
+
+Ajoutez ou modifiez une ligne, puis recompilez pprzlink. La conversion utilise
+`nombre_XML * facteur` avant d'appliquer LLNL, y compris pour les températures.
+Les sélecteurs message/champ sont facultatifs ; la règle la plus spécifique
+gagne, puis la première ligne en cas d'égalité. Aucune règle n'est enregistrée
+dans le registre global LLNL : les conversions préparées sont immuables.
+
+Si le champ XML fournit `alt_unit` et `alt_unit_coef`, ce coefficient explicite
+décrit le passage du nombre brut à l'unité alternative et prend priorité sur
+le facteur de la table, même s'il est arrondi dans le XML. Il est appliqué une
+seule fois. Cette description permet de convertir certains champs à virgule
+fixe dont l'attribut `unit` est absent. Un coefficient sans unité ne suffit pas.
+
+Une conversion inconnue, interdite ou incohérente lève `field_unit_error` avec
+le message, le champ et le libellé XML. Cela concerne notamment les codes de
+commande, les capteurs sans calibration et `GROUND_REF.pos`, qui mélange
+degrés et mètres selon son repère. Les méthodes ne changent pas les repères,
+références d'altitude ou epochs temporelles.
+
+### Adopter l'API SI dans un programme existant
+
+Vous pouvez remplacer localement une lecture par `getFieldSI()` ou une
+écriture par `setFieldSI()` lorsque la grandeur est fournie en SI et que ses
+métadonnées permettent la conversion. Les transports série, UDP et Ivy
+continuent à transmettre les mêmes types et valeurs XML. Recompilez la
+bibliothèque et les programmes clients : la disposition des classes C++ a
+changé, ce qui interdit de réutiliser des binaires construits avec les anciens en-têtes.
+
+Les clients série, PTY et Ivy fournis utilisent maintenant `getFieldSI()` et
+`setFieldSI()` pour leurs altitudes. Le XML fourni possède `unit="m"`, mais
+le même code fonctionne avec une altitude XML entière en millimètres : les
+programmes continuent à fournir et afficher des mètres. Les réglages génériques `GUIDE_SETTING.value` et
+`CLIENT_SETTING.value` n'ont pas d'unité physique connue : gardez leur accès
+natif. Le routage de `link++` relaie lui aussi les valeurs XML ; les identifiants
+`ac_id`, masques, commandes et compteurs n'exigent aucune conversion SI.
+Les traitements applicatifs de mesures peuvent appeler les méthodes SI sur
+les messages reçus, sans modifier les codecs ni le relais.
+
 ### Observer une erreur sans arrêter le programme
 
 Ajoutez l'en-tête `<pprzlink/exceptions/pprzlink_exception.h>`, puis :
@@ -393,7 +537,7 @@ if (!received) {
 }
 
 std::cout << "Altitude décodée : "
-          << received->message.getField<float>("altitude") << " m\n";
+          << received->message.getFieldSI("altitude") << " m\n";
 std::cout << "Taille reçue : " << received->frameSize << " octets\n";
 ```
 
@@ -427,7 +571,7 @@ std::cout << line << '\n';
 auto fromText = pprzlink::ivy_codec::parseMessageBody(
     dictionary.getDefinition("GUIDE_ALTITUDE"),
     "42", "GUIDE_ALTITUDE 123.5");
-std::cout << fromText.getField<float>("altitude") << '\n';
+std::cout << fromText.getFieldSI("altitude") << '\n';
 ```
 
 La ligne sérialisée commence par `42 GUIDE_ALTITUDE`, suivie de l'altitude.
@@ -487,7 +631,7 @@ int main(int argc, char **argv)
         pprzlink::Message altitude(dictionary.getDefinition("GUIDE_ALTITUDE"));
         altitude.setSenderId(42);
         altitude.setReceiverId(0);
-        altitude.setField("altitude", 123.5f);
+        altitude.setFieldSI("altitude", 123.5);
 
         const auto destination = receiver.localEndpoint();
         const auto sent = sender.sendMessage(altitude, destination);
@@ -603,7 +747,7 @@ int main(int argc, char **argv)
         pprzlink::Message altitude(dictionary.getDefinition("GUIDE_ALTITUDE"));
         altitude.setSenderId(42);
         altitude.setReceiverId(0);
-        altitude.setField("altitude", 123.5f);
+        altitude.setFieldSI("altitude", 123.5);
         transport.sendMessage(altitude);
 
         const auto deadline = std::chrono::steady_clock::now() + 10s;
@@ -805,10 +949,10 @@ int main(int argc, char **argv)
         pprzlink::IvyLink link(dictionary, "guide-recepteur",
                                "127.255.255.255:2010");
 
-        auto subscription = link.subscribeMessage("GUIDE_ALTITUDE",
+auto subscription = link.subscribeMessage("GUIDE_ALTITUDE",
             [&](std::string sender, pprzlink::Message message) {
                 std::cout << "Altitude de " << sender << " : "
-                          << message.getField<float>("altitude") << " m\n";
+                          << message.getFieldSI("altitude") << " m\n";
                 received = true;
                 link.stop();
             });
@@ -868,7 +1012,7 @@ int main(int argc, char **argv)
         const pprzlink::MessageDictionary dictionary(argv[1]);
         pprzlink::Message altitude(dictionary.getDefinition("GUIDE_ALTITUDE"));
         altitude.setSenderId(42);
-        altitude.setField("altitude", 123.5f);
+        altitude.setFieldSI("altitude", 123.5);
 
         pprzlink::IvyLink link(dictionary, "guide-emetteur",
                                "127.255.255.255:2010", true);
@@ -963,7 +1107,7 @@ auto subscription = link.subscribeRequestAnswerer(
         std::cout << "Demande reçue de " << sender << '\n';
         pprzlink::Message answer(dictionary.getDefinition("GUIDE_ALTITUDE"));
         answer.setSenderId(42);
-        answer.setField("altitude", 123.5f);
+        answer.setFieldSI("altitude", 123.5);
         received = true;
         return answer;
     });
@@ -980,7 +1124,7 @@ Dans `emetteur_ivy.cpp`, ajoutez `<future>` et `<memory>`. Remplacez la
 construction du message `altitude`, avant celle du lien, par :
 
 ```cpp
-auto result = std::make_shared<std::promise<float>>();
+auto result = std::make_shared<std::promise<double>>();
 auto future = result->get_future();
 pprzlink::Message request(dictionary.getDefinition("GUIDE_ALTITUDE_REQ"));
 request.setSenderId(std::string("station-sol"));
@@ -993,7 +1137,7 @@ Gardez le lien Ivy, l'attente au clavier et la découverte de l'abonnement.
 const long pending = link.sendRequest(request,
     [result](std::string, pprzlink::Message answer) {
         try {
-            result->set_value(answer.getField<float>("altitude"));
+            result->set_value(answer.getFieldSI("altitude"));
         } catch (...) {
             result->set_exception(std::current_exception());
         }
@@ -1181,10 +1325,11 @@ Cette référence appartient au message : ne la conservez pas après sa
 destruction ou le remplacement du champ.
 
 Les métadonnées chargées comprennent les noms, types, identifiants, le
-format d'affichage et le mode de routage `link`. Les descriptions et unités
-du XML ne sont pas actuellement exposées par cette API. En particulier,
-`unit="m"` n'applique aucune conversion automatique : votre application
-doit donner le bon sens physique aux valeurs.
+format d'affichage, le mode de routage `link`, les unités et leurs coefficients
+explicites. `field.getUnit()` fournit l'unité XML et `field.getSIUnit()` celle
+de l'accès SI. Les descriptions textuelles ne sont pas exposées. Seuls
+`getFieldSI()` et `setFieldSI()` demandent une conversion d'unité ; les appels
+natifs et les codecs continuent à utiliser les valeurs XML.
 
 ### Brancher un autre flux d'octets
 
@@ -1295,7 +1440,7 @@ en mémoire :
 void traiterAltitude(const pprzlink::Message &message)
 {
     if (message.getDefinition().getName() != "GUIDE_ALTITUDE") return;
-    const double metres = message.getFieldAs<double>("altitude");
+    const double metres = message.getFieldSI("altitude");
     std::cout << "Altitude traitée : " << metres << " m\n";
 }
 ```
@@ -1319,7 +1464,8 @@ nécessitent une reconnexion ou un arrêt.
 | `no_such_field` | Le nom du champ correspond-il exactement à celui du XML ? |
 | `field_has_no_value` | Tous les champs ont-ils été remplis avant lecture ou sérialisation ? |
 | `field_type_mismatch` | Le type de `getField<T>()` correspond-il au XML ? Faut-il `getFieldAs<T>()` ? |
-| `field_conversion_error` | La valeur tient-elle dans le type demandé, sans fraction perdue vers un entier ? |
+| `field_conversion_error` | La valeur tient-elle dans le type XML après conversion et, pour un setter SI entier, arrondi ? Le setter natif refuse les fractions. |
+| `field_unit_error` | `canConvertSI()` est-il vrai ? Vérifier les unités/coefficient XML et la correspondance dans `UnitAliases.cpp`. |
 | `std::length_error` | Taille de tableau fixe incorrecte, tableau trop long ou message trop grand ? |
 | `tryReceive()` reste vide en série | Le contexte Asio tourne-t-il ? Le correspondant émet-il, avec le bon débit et le bon protocole ? |
 | Rien ne déclenche le callback Ivy | Même domaine Ivy, abonnement encore vivant, boucle active et publication après découverte ? |

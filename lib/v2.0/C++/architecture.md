@@ -116,13 +116,48 @@ présentes partout. `WIND_INFO`, par exemple, documente les bits de son champ
 | `link="forwarded"` ou `"broadcasted"` | Exposé par `MessageDefinition::getLinkMode()` ; la politique reste dans `link++`. |
 | `format`, par exemple `"%.1f"` | Exposé par `MessageField::getFormat()` ; utilisé notamment par le formatage de compatibilité OCaml. |
 | `<description>` et texte explicatif d'un champ | Présents dans le fichier lorsqu'ils sont renseignés, mais non conservés dans les objets C++ actuels. |
-| `unit`, `alt_unit`, `alt_unit_coef` | Non exposés par l'API C++ actuelle ; aucune conversion automatique d'unité. |
+| `unit`, `alt_unit`, `alt_unit_coef` | Conservés dans `MessageField` et exposés par leurs getters. Les appels SI explicites convertissent les grandeurs via LLNL/units. |
 | `values`, pour les libellés de valeurs | Non exposé comme une énumération C++ et non utilisé pour restreindre les valeurs du champ. |
 
-Ainsi, une interface graphique peut aujourd'hui découvrir les noms et les
-types des champs. Pour afficher automatiquement leur description, leur unité
-ou une liste de valeurs nommées, il faudrait enrichir le chargement et l'API
-de métadonnées de la bibliothèque.
+Ainsi, une interface graphique peut découvrir les noms, types, unités XML,
+coefficients explicites et unités SI des champs. Les descriptions textuelles
+et listes de valeurs nommées demanderaient encore d'enrichir le chargement.
+
+### Accès explicite aux grandeurs SI
+
+`Message::getFieldDefinition()` donne directement accès à `MessageField`,
+même avant que sa valeur soit renseignée. `getUnit()`, `getAltUnit()` et
+`getAltUnitCoef()` conservent les métadonnées originales ; `getSIUnit()` et
+`canConvertSI()` décrivent la conversion préparée.
+
+`getFieldSI()` retourne un `double` en unités SI cohérentes ; `setFieldSI()`
+reçoit un `double`, convertit vers l'unité XML et stocke le type déclaré.
+L'arrondi entier est toujours au plus proche, avec les demi-valeurs en
+s'éloignant de zéro. Les conversions natives gardent leur contrat.
+Les tableaux numériques homogènes ont une entrée `span<const double>` et
+une sortie `vector<double>&`, validées entièrement avant remplacement.
+`MessageField::fromSI<T>()` et `toSI(T)` permettent une conversion isolée
+d'un scalaire ou d'un élément, avec le type numérique exact du XML.
+
+LLNL/units reste derrière des conversions immuables partagées par les copies
+de définitions. Les sources sont épinglées dans le sous-module
+`third_party/llnl_units`, compilé automatiquement par CMake ou Make. Le SDK
+installe aussi la bibliothèque LLNL et son paquet CMake ; l'option
+`PPRZLINK_USE_SYSTEM_UNITS` permet de sélectionner un paquet système.
+Sa dépendance compilée est privée ; les signatures publiques
+n'exposent aucun type LLNL. [UnitAliases.cpp](pprzlink/UnitAliases.cpp) contient
+une table éditable de libellés, facteurs et sélecteurs facultatifs message/champ,
+sans modifier le registre global LLNL. Un coefficient XML explicite avec une
+unité alternative a priorité sur le facteur d'alias ; cette description peut
+suffire même sans `unit`. Les coefficients sans unité et les conventions
+dépendantes d'une calibration ou d'un repère restent disponibles comme
+métadonnées, sans conversion SI. `field_unit_error` signale ces demandes.
+
+Les codecs et le relais `link++` échangent toujours les types/valeurs XML.
+La conversion d'unité ne transforme ni repère, ni référence d'altitude, ni
+epoch. L'ajout de métadonnées modifie la disposition des classes C++ : les
+clients doivent être recompilés avec la bibliothèque. Voir le
+[guide d'utilisation](guide_d_utilisation.md#convertir-explicitement-les-unités).
 
 ### Comparaison avec DSDL et Protobuf
 
@@ -166,7 +201,7 @@ incorrectes sans erreur de décodage lorsque les tailles restent compatibles.
 | --- | --- |
 | [`MessageDictionary`](pprzlink/MessageDictionary.h) | Possède les définitions ; recherche par nom ou par couple classe/identifiant. |
 | [`MessageDefinition`](pprzlink/MessageDefinition.h) | Décrit un message et la liste ordonnée de ses champs. |
-| [`MessageField`](pprzlink/MessageField.h) / [`FieldType`](pprzlink/MessageFieldTypes.h) | Décrivent un champ : nom, type, tableau éventuel et format. |
+| [`MessageField`](pprzlink/MessageField.h) / [`FieldType`](pprzlink/MessageFieldTypes.h) | Décrivent un champ : nom, type, tableau éventuel, format et unités/conversion SI. |
 | [`FieldValue`](pprzlink/FieldValue.h) | Contient la valeur d'un champ, scalaire ou tableau, dans un `std::variant`. |
 | [`Message`](pprzlink/Message.h) | Possède une copie de sa définition, ses valeurs et ses identifiants d'expéditeur/destinataire/composant. |
 | [`ReceivedMessage`](pprzlink/ReceivedMessage.h) | Possède un `Message` reçu et les métadonnées de sa réception. |
@@ -538,7 +573,7 @@ callback Ivy suivent le mécanisme du bus natif, accessible par `getBus()` ;
 
 | Cible CMake | Contenu et usage |
 | --- | --- |
-| `pprzlink::core` | Dictionnaire, messages, codecs, abstractions et transports sur `Device`. Permet le décodage hors ligne ou l'intégration à ses propres I/O, sans bus Ivy. |
+| `pprzlink::core` | Dictionnaire, messages, conversions SI LLNL/units, codecs, abstractions et transports sur `Device`. Permet le décodage hors ligne ou l'intégration à ses propres I/O, sans bus Ivy. |
 | `pprzlink::io` | Ajoute série Boost.Asio, UDP et périphérique POSIX ; dépend de `core`. |
 | `pprzlink::ivy` | Ajoute `IvyLink` et la dépendance Ivy native ; dépend de `core`. |
 | `pprzlink++`, `pprzlink++_static` | Cibles historiques regroupant les composants construits. |

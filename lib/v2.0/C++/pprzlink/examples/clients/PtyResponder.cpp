@@ -36,7 +36,7 @@ int main(int argc, char **argv)
         pprzlink::Message altitude(dictionary.getDefinition("GUIDE_ALTITUDE"));
         altitude.setSenderId(42);
         altitude.setReceiverId(0);
-        altitude.setField("altitude", 123.5f);
+        altitude.setFieldSI("altitude", 123.5); // Metres, independently of the XML representation.
         transport.sendMessage(altitude);
         std::cout << "Answered GUIDE_ALTITUDE_REQ with 123.5 m\n";
         return 0;

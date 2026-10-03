@@ -9,6 +9,8 @@ if(CLIENTS_WITH_IVY)
 endif()
 find_package(pprzlink++ CONFIG REQUIRED COMPONENTS ${components})
 
+add_executable(si_units SIUnits.cpp)
+target_link_libraries(si_units PRIVATE pprzlink::core)
 add_executable(serial_aircraft SerialAircraft.cpp)
 target_link_libraries(serial_aircraft PRIVATE pprzlink::io)
 add_executable(pty_requester PtyRequester.cpp)

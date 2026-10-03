@@ -7,6 +7,7 @@ function(add_pprzlink_example target source component)
 endfunction()
 
 add_pprzlink_example(serial_messages SerialMessages.cpp io)
+add_pprzlink_example(si_units clients/SIUnits.cpp core)
 add_pprzlink_example(serial_aircraft clients/SerialAircraft.cpp io)
 add_pprzlink_example(pty_requester clients/PtyRequester.cpp io)
 add_pprzlink_example(pty_responder clients/PtyResponder.cpp io)

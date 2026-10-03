@@ -63,15 +63,15 @@ int main(int argc, char **argv)
 
     // 4. Set the field and send through Ivy, then read the received field.
     waitForReceiver(sender, receiverName);
-    sender.sendMessage(outgoing.setField("altitude", 123.5f));
+    sender.sendMessage(outgoing.setFieldSI("altitude", 123.5));
     std::cout << "Sent: " << outgoing.toString() << '\n';
     if (reception.wait_for(5s) != std::future_status::ready) {
       throw std::runtime_error("Timed out waiting for the altitude message");
     }
     const auto incoming = reception.get();
-    const auto altitude = incoming.getField<float>("altitude");
+    const double altitude = incoming.getFieldSI("altitude");
     const auto &source = std::get<std::string>(incoming.getSenderId());
-    if (source != "42" || altitude != 123.5f) {
+    if (source != "42" || altitude != 123.5) {
       throw std::runtime_error("Received message differs from the sent message");
     }
     std::cout << "Received from " << source << ": altitude = " << altitude << " m\n";

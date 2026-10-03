@@ -26,6 +26,7 @@
  */
 
 #include <pprzlink/MessageField.h>
+#include "detail/UnitConversion.h"
 #include <utility>
 
 namespace pprzlink {
@@ -42,9 +43,59 @@ namespace pprzlink {
     }
   }
 
-  MessageField::MessageField(const std::string &name, const std::string &typeString, std::string format)
+  MessageField::MessageField(const std::string &name, const std::string &typeString, std::string format,
+                             std::string unit, std::string altUnit, std::optional<double> altUnitCoef,
+                             std::string messageName)
     : MessageField(name, FieldType(typeString))
-  { this->format = std::move(format); }
+  {
+    this->format = std::move(format);
+    this->unit = std::move(unit);
+    this->altUnit = std::move(altUnit);
+    this->altUnitCoef = altUnitCoef;
+    this->messageName = std::move(messageName);
+    if (altUnitCoef && (!std::isfinite(*altUnitCoef) || *altUnitCoef == 0.0)) {
+      throw bad_message_file("alt_unit_coef must be finite and nonzero");
+    }
+    if (type.getBaseType() != BaseType::STRING) {
+      unitConversion = detail::prepareUnitConversion(this->unit, this->altUnit, altUnitCoef,
+                                                     this->messageName, name);
+    }
+  }
+
+  const std::string &MessageField::getSIUnit() const noexcept
+  {
+    static const std::string unspecified;
+    return unitConversion ? unitConversion->siSymbol : unspecified;
+  }
+
+  std::string MessageField::unitContext() const
+  {
+    return std::format("message '{}' field '{}' (XML unit '{}')", messageName, name, unit);
+  }
+
+  double MessageField::valueToSI(double value) const
+  {
+    if (!unitConversion) throw field_unit_error(unitContext() + ": SI conversion is unavailable");
+    const auto &conversion = *unitConversion;
+    const double converted = units::convert(value * conversion.xmlScale,
+                                            conversion.xmlUnit, conversion.siUnit);
+    if (std::isfinite(value) && !std::isfinite(converted)) {
+      throw field_conversion_error(unitContext() + ": value cannot be represented as an SI double");
+    }
+    return converted;
+  }
+
+  double MessageField::valueFromSI(double value) const
+  {
+    if (!unitConversion) throw field_unit_error(unitContext() + ": SI conversion is unavailable");
+    const auto &conversion = *unitConversion;
+    const double converted = units::convert(value, conversion.siUnit,
+                                            conversion.xmlUnit) / conversion.xmlScale;
+    if (std::isfinite(value) && !std::isfinite(converted)) {
+      throw field_conversion_error(unitContext() + ": SI value exceeds the XML numeric range");
+    }
+    return converted;
+  }
 
   const std::string &MessageField::getName() const
   {

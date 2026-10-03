@@ -23,7 +23,7 @@ int main(int argc, char **argv)
     pprzlink::Message altitude(dictionary.getDefinition("CLIENT_ALTITUDE"));
     altitude.setSenderId(42);
     altitude.setReceiverId(0);
-    altitude.setField("altitude", 123.5); // Checked conversion to the XML float type.
+    altitude.setFieldSI("altitude", 123.5); // Metres; the XML chooses the stored unit/type.
     transport.sendMessage(altitude);
 
     const auto deadline = std::chrono::steady_clock::now() + 10s;

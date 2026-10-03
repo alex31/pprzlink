@@ -86,6 +86,9 @@ namespace pprzlink {
   /// @brief A declared field has not been populated with a value.
   /// @ingroup errors
   DECLARE_PPRZLINK_EXCEPT(field_has_no_value)
+  /// Requested SI conversion has absent, unsupported or inconsistent unit metadata.
+  /// @ingroup errors
+  DECLARE_PPRZLINK_EXCEPT(field_unit_error)
   /// @brief A requested XML class name or identifier is unknown.
   /// @ingroup errors
   DECLARE_PPRZLINK_EXCEPT(no_such_class)

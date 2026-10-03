@@ -15,7 +15,7 @@
  * - @ref errors describes the exceptions reported by the public API.
  * - @ref internals documents shared validation and payload helpers.
  *
- * The CMake target `pprzlink::core` contains schemas and codecs;
+ * The CMake target `pprzlink::core` contains schemas, codecs and compiled LLNL/units conversions;
  * `pprzlink::io` adds operating-system I/O, and `pprzlink::ivy` adds the optional
  * Ivy 3.18+ adapter. The aggregate targets remain available for compatibility.
  *
@@ -33,9 +33,14 @@
  * to the XML type. Exact reads use the stored C++ type; numeric conversions
  * must be requested explicitly. Binary frames carry identifiers and values,
  * so both endpoints need compatible XML schemas and field order.
+ * getFieldSI()/setFieldSI() request coherent SI conversions with double values.
+ * Integer SI writes round to nearest, with ties away from zero, and retain
+ * the XML storage type. MessageField exposes original XML unit metadata and
+ * the prepared SI unit; UnitAliases.cpp contains editable scoped conventions.
  *
  * @section examples Learning examples
  * The repository's guide_d_utilisation.md walks through the public API.
+ * The offline `si_units` example demonstrates metadata, conversion and native framing.
  * The `pty_agent` example runs the same sender/receiver at either end of a
  * virtual serial pair. `link++ -socat start` creates interchangeable ports
  * and `link++ -socat stop` removes them. These utilities are application

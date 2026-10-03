@@ -44,11 +44,11 @@ int main(int argc, char **argv)
     device->setFlowcontrol(Serial::Flowcontrol(Serial::Flowcontrol::none));
     pprzlink::PprzTransport transport(std::move(device), dictionary);
 
-    const float metres = 123.5f + static_cast<float>(id);
+    const double metres = 123.5 + id;
     pprzlink::Message altitude(dictionary.getDefinition("GUIDE_ALTITUDE"));
     altitude.setSenderId(id);
     altitude.setReceiverId(255); // Broadcast: neither port is assigned a ground/aircraft role.
-    altitude.setField("altitude", metres);
+    altitude.setFieldSI("altitude", metres);
     std::signal(SIGINT, stop);
     std::signal(SIGTERM, stop);
     std::cout << "Agent " << id << " ready on " << argv[2] << std::endl;
@@ -65,7 +65,7 @@ int main(int argc, char **argv)
         if (message.getDefinition().getName() != "GUIDE_ALTITUDE" || sender == id ||
             (message.getReceiverId() != id && message.getReceiverId() != 255)) continue;
         std::cout << "Agent " << id << " RX from " << +sender << ": GUIDE_ALTITUDE "
-                  << message.getField<float>("altitude") << " m" << std::endl;
+                  << message.getFieldSI("altitude") << " m" << std::endl;
       }
       context.restart();
       context.run_for(10ms);

@@ -36,6 +36,8 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <span>
+#include <vector>
 
 namespace pprzlink {
   namespace detail {
@@ -224,6 +226,73 @@ namespace pprzlink {
     {
       return getField(def.getField(index).getName());
     }
+
+    /// Borrow a field definition even if its value has not been set.
+    /// @param[in] name Exact XML field name.
+    /// @return Metadata valid until message destruction or assignment.
+    /// @throws no_such_field The field is not declared.
+    [[nodiscard]] const MessageField &getFieldDefinition(const std::string &name) const
+    { return def.getField(name); }
+    /// Borrow field metadata by XML position, independently of populated values.
+    /// @param[in] index Zero-based XML field position.
+    /// @return Metadata valid until message destruction or assignment.
+    /// @throws no_such_field The position is outside the schema.
+    [[nodiscard]] const MessageField &getFieldDefinition(size_t index) const
+    { return def.getField(index); }
+
+    /// Read an arithmetic scalar as a double in coherent SI units.
+    /// Angles use radians, temperatures kelvins and percentages a dimensionless ratio.
+    /// @param[in] name Exact XML field name.
+    /// @return SI value of the actual stored number, including any prior quantization.
+    /// @throws no_such_field The field is not declared.
+    /// @throws field_has_no_value The field has not been set.
+    /// @throws field_type_mismatch The field is an array or text.
+    /// @throws field_unit_error SI conversion is unavailable.
+    /// @throws field_conversion_error A finite value overflows the SI double.
+    [[nodiscard]] double getFieldSI(const std::string &name) const;
+    /// Read an SI arithmetic scalar by XML position.
+    /// @param[in] index Zero-based XML field position.
+    /// @return SI scalar value as double.
+    /// @throws std::exception Same failures as the name-based SI getter.
+    [[nodiscard]] double getFieldSI(size_t index) const
+    { return getFieldSI(def.getField(index).getName()); }
+    /// Assign an SI scalar after a complete successful conversion.
+    /// @param[in] name Exact XML field name.
+    /// @param[out] value SI double, unchanged if reading fails.
+    /// @throws std::exception Same failures as the returning SI getter.
+    void getFieldSI(const std::string &name, double &value) const { value = getFieldSI(name); }
+    /// Assign an SI scalar selected by XML position.
+    /// @param[in] index Zero-based XML field position.
+    /// @param[out] value SI double, unchanged if reading fails.
+    /// @throws std::exception Same failures as the returning SI getter.
+    void getFieldSI(size_t index, double &value) const { value = getFieldSI(index); }
+    /// Convert all elements of a homogeneous numeric array before replacing the output.
+    /// @param[in] name Exact XML field name.
+    /// @param[out] values SI doubles; unchanged on failure.
+    /// @throws std::exception Missing field/value, wrong shape/type, unsupported units or overflow.
+    void getFieldSI(const std::string &name, std::vector<double> &values) const;
+    /// Read a homogeneous SI array selected by XML position.
+    /// @param[in] index Zero-based XML field position.
+    /// @param[out] values SI doubles; unchanged on failure.
+    /// @throws std::exception Same failures as the name-based SI array getter.
+    void getFieldSI(size_t index, std::vector<double> &values) const
+    { getFieldSI(def.getField(index).getName(), values); }
+
+    /// Convert an SI double into the XML unit/type before replacing a scalar.
+    /// Integer storage rounds to nearest, with ties away from zero and no saturation.
+    /// @param[in] name Exact XML field name.
+    /// @param[in] value SI double (angles radians, absolute temperatures kelvins).
+    /// @return This message by const reference, as with setField().
+    /// @throws std::exception Missing field, wrong shape/type, unsupported units or numeric overflow.
+    /// The previous field value is unchanged if conversion fails.
+    const Message &setFieldSI(const std::string &name, double value);
+    /// Convert homogeneous array elements and validate their extent before replacement.
+    /// @param[in] name Exact XML field name.
+    /// @param[in] values SI doubles, accepted from spans, vectors and std::arrays.
+    /// @return This message by const reference, as with setField().
+    /// @throws std::exception Wrong shape/extent, unsupported units or an element conversion failure.
+    /// The previous field value is unchanged if any element conversion fails.
+    const Message &setFieldSI(const std::string &name, std::span<const double> values);
 
     /// Binary codec wrappers; offset advances only after a complete field is stored.
     /// @param[in] index Zero-based XML field position.
