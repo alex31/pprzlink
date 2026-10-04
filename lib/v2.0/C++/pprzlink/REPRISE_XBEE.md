@@ -1,5 +1,11 @@
 # Reprise pprzlink C++ — 27 septembre 2026
 
+Ce document conserve l'état et les validations de la reprise du 27 septembre.
+Les évolutions ultérieures, dont le framing XBee 868, le SDK modulaire et les
+adaptateurs de réception Asio, sont décrites dans [le README](../README.md) et
+[les contrats d'API](../API_USAGE.md). Les limitations de compilation et numéros
+de tests ci-dessous concernent l'état historique indiqué, pas la branche actuelle.
+
 ## Demande et décisions conservées
 
 Ajouter le transport XBee API et l’initialisation du modem, en s’inspirant du

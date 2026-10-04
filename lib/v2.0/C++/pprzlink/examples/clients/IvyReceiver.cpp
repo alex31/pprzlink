@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-#include <pprzlink/IvyLink.h>
+#include <pprzlink/IvyAsync.h>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <iostream>
 
@@ -11,22 +13,30 @@ int main(int argc, char **argv)
   }
   try {
     const pprzlink::MessageDictionary dictionary(argv[1]);
-    pprzlink::IvyLink link(dictionary, "ivy-receiver-example", argv[2]);
+    boost::asio::io_context context;
+    boost::asio::steady_timer timeout(context);
     bool received = false;
+    pprzlink::IvyLink link(dictionary, "ivy-receiver-example", argv[2], true);
 
-    // Keep this subscription alive for as long as reception is wanted.
-    auto altitude = link.subscribeMessage("CLIENT_ALTITUDE",
+    // Ivy owns its receive thread; application callbacks run on this context.
+    pprzlink::IvyAsyncSubscription altitude;
+    altitude = pprzlink::subscribeMessageOn(context.get_executor(), link, "CLIENT_ALTITUDE",
       [&](std::string sender, pprzlink::Message message) {
         const double metres = message.getFieldSI("altitude");
         std::cout << "Aircraft " << sender << ": " << metres << " m\n";
         received = true;
-        link.stop(); // This one-message example is done. Destruction happens after run().
+        altitude.reset(); // Release subscription work and suppress later deliveries.
+        timeout.cancel();
       });
     // A bounded wait keeps the example useful even when no sender is present.
-    auto timeout = link.getBus().bind_event(
-      [&](std::chrono::milliseconds) { link.stop(); }, ivy::after(std::chrono::seconds(10)));
-    if (!timeout) throw std::system_error(timeout.error(), "Ivy timeout");
-    link.run();
+    timeout.expires_after(std::chrono::seconds(10));
+    timeout.async_wait([&](const boost::system::error_code &error) {
+      if (!error) altitude.reset();
+    });
+    context.run();
+    link.stop();
+    const auto callbackError = link.getBus().take_callback_error();
+    if (!callbackError) throw std::system_error(callbackError.error(), "Ivy receive");
     if (!received) {
       std::cerr << "No altitude received within 10 seconds\n";
       return 1;

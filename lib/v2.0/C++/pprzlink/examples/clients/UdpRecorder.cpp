@@ -2,10 +2,11 @@
 // Record three messages with the source endpoint belonging to each message.
 #include <pprzlink/UdpTransport.h>
 #include <pprzlink/IvyMessageCodec.h>
+#include <pprzlink/TransportPump.h>
+#include <boost/asio/steady_timer.hpp>
 #include <charconv>
 #include <chrono>
 #include <iostream>
-#include <thread>
 
 int main(int argc, char **argv)
 {
@@ -26,18 +27,20 @@ int main(int argc, char **argv)
       {.local = {"127.0.0.1", port}});
     std::cout << "Listening on " << transport.localEndpoint().port << std::endl;
 
-    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    boost::asio::steady_timer deadline(context, 10s);
     int count = 0;
-    while (count < 3 && std::chrono::steady_clock::now() < deadline) {
-      if (auto received = transport.tryReceive()) {
-        std::cout << received->udpPeer->address << ':' << received->udpPeer->port
-                  << " [" << received->frameSize << " bytes] "
-                  << pprzlink::ivy_codec::serializeMessage(received->message) << std::endl;
-        ++count;
-      } else {
-        std::this_thread::sleep_for(5ms); // This small console program has no other work.
-      }
-    }
+    pprzlink::TransportPump receiver(context, transport,
+      [&](pprzlink::ReceivedMessage received) {
+        std::cout << received.udpPeer->address << ':' << received.udpPeer->port
+                  << " [" << received.frameSize << " bytes] "
+                  << pprzlink::ivy_codec::serializeMessage(received.message) << std::endl;
+        if (++count == 3) { receiver.stop(); deadline.cancel(); }
+      });
+    deadline.async_wait([&](const boost::system::error_code &error) {
+      if (!error) receiver.stop();
+    });
+    receiver.start();
+    context.run();
     return count == 3 ? 0 : 1;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

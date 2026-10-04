@@ -209,33 +209,60 @@ namespace {
       <field name="labels" type="string[]"/>
     )");
     Message message(dict.getDefinition("UNITS"));
+    expectException<field_has_no_value>([&] { (void)message.getFieldSIArray("position"); });
+    expectException<no_such_field>([&] { (void)message.getFieldSIArray("absent"); });
+    expectException<no_such_field>([&] { (void)message.getFieldSIArray(size_t{6}); });
     const std::array<double, 3> position{1.234, -2.345, 0.0};
-    message.setFieldSI("position", position);
+    require(&message.setFieldSIArray("position", position) == &message,
+            "SI array setter returns the same message");
     require(message.getField<std::vector<int16_t>>("position") == std::vector<int16_t>({123, -235, 0}),
             "SI arrays use the XML element type and round every integer");
-    std::vector<double> output;
-    message.getFieldSI(size_t{0}, output);
-    close(output.at(0), 1.23); close(output.at(1), -2.35);
+    auto output = message.getFieldSIArray(size_t{0});
+    require(output.size() == 3 && output == message.getFieldSIArray("position"),
+            "SI array getters by name and index return the same owned values");
+    close(output.at(0), 1.23); close(output.at(1), -2.35); close(output.at(2), 0.0);
+    std::vector<double> legacy;
+    message.getFieldSI("position", legacy);
+    require(legacy == output, "Legacy SI array getter by name forwards to the returning getter");
+    legacy.clear();
+    message.getFieldSI(size_t{0}, legacy);
+    require(legacy == output, "Legacy SI array getter by index forwards to the returning getter");
+    output.front() = 42.0;
+    require(message.getField<std::vector<int16_t>>("position").front() == 123,
+            "Returned SI array owns its elements independently of the message");
     expectException<field_conversion_error>([&] {
-      message.setFieldSI("position", std::array<double, 3>{1.0, 1000.0, 3.0});
+      message.setFieldSIArray("position", std::array<double, 3>{1.0, 1000.0, 3.0});
     });
     require(message.getField<std::vector<int16_t>>("position") == std::vector<int16_t>({123, -235, 0}),
             "A failed element preserves the whole previous array");
-    expectException<std::length_error>([&] { message.setFieldSI("position", std::array<double, 2>{1.0, 2.0}); });
+    expectException<std::length_error>([&] { message.setFieldSIArray("position", std::array<double, 2>{1.0, 2.0}); });
     expectException<field_type_mismatch>([&] { message.setFieldSI("position", 1.0); });
-    expectException<field_type_mismatch>([&] { message.setFieldSI("scalar", position); });
+    expectException<field_type_mismatch>([&] { (void)message.getFieldSI("position"); });
+    expectException<field_type_mismatch>([&] { message.setFieldSIArray("scalar", position); });
+    message.setFieldSI("scalar", 1.0);
+    expectException<field_type_mismatch>([&] { (void)message.getFieldSIArray("scalar"); });
     expectException<field_type_mismatch>([&] { message.setFieldSI("label", 1.0); });
-    expectException<field_type_mismatch>([&] { message.setFieldSI("labels", std::span<const double>{}); });
+    expectException<field_type_mismatch>([&] { message.setFieldSIArray("labels", std::span<const double>{}); });
     message.setField("labels", std::vector<std::string>{});
-    expectException<field_type_mismatch>([&] { message.getFieldSI("labels", output); });
-    message.setFieldSI("samples", std::span<const double>{});
-    message.getFieldSI("samples", output);
+    expectException<field_type_mismatch>([&] { (void)message.getFieldSIArray("labels"); });
+    const std::vector<double> samples{1.25, -2.5};
+    message.setFieldSIArray("samples", samples);
+    require(message.getFieldSIArray("samples") == samples, "SI array setter accepts vector storage");
+    const double sample_buffer[]{0.0, 1.25, -2.5, 0.0};
+    message.setFieldSIArray("samples", std::span(sample_buffer).subspan(1, 2));
+    require(message.getFieldSIArray("samples") == samples, "SI array setter accepts a span over part of a C array");
+    message.setFieldSI("samples", samples);
+    require(message.getFieldSIArray("samples") == samples, "Legacy SI array setter forwards to the named array setter");
+    message.setFieldSIArray("samples", std::span<const double>{});
+    output = message.getFieldSIArray("samples");
     require(output.empty(), "Empty supported dynamic array round trip");
     message.setField("unsupported", std::vector<int16_t>{});
     output = {42.0};
+    expectException<field_unit_error>([&] { output = message.getFieldSIArray("unsupported"); });
+    require(output == std::vector<double>{42.0}, "Failed SI array read does not assign a partial result");
     expectException<field_unit_error>([&] { message.getFieldSI("unsupported", output); });
-    expectException<field_unit_error>([&] { message.setFieldSI("unsupported", std::span<const double>{}); });
-    require(output == std::vector<double>{42.0}, "Failed SI array read leaves output intact even for empty arrays");
+    require(output == std::vector<double>{42.0}, "Legacy SI array read still preserves output on failure");
+    expectException<field_unit_error>([&] { message.setFieldSIArray("unsupported", std::span<const double>{}); });
 
     const auto wire = dictionary(R"(
       <field name="alt" type="int32" unit="mm" alt_unit="m"/>

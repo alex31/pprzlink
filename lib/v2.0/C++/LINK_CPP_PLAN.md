@@ -5,6 +5,10 @@ dans l'ordre, en conservant les résultats de validation à chaque étape.
 Mise en œuvre logicielle réalisée le 29 septembre 2026 ; voir
 [le rapport d'implémentation et de comparaison](LINK_CPP_VALIDATION.md).
 La validation sur les modems physiques et avec une session GCS reste distincte.
+Les mécanismes de réception réutilisables ajoutés ensuite (`TransportPump` et
+abonnements Ivy transférés vers Asio) sont documentés dans
+[API_USAGE.md](API_USAGE.md). Les étapes et critères ci-dessous conservent le
+plan de remplacement initial, sans constituer une nouvelle validation.
 
 ## Objectif et référence
 
@@ -116,7 +120,7 @@ absente ne doit jamais être présentée comme une option opérationnelle.
 
 ## Étape 0 — Valider Ubuntu 24.04 et GCC 13
 
-**État : réalisée pour la bibliothèque actuelle.** Voir
+**État : réalisée pour la bibliothèque de référence du 29 septembre.** Voir
 [le rapport Ubuntu 24.04 / GCC 13](VALIDATION_UBUNTU24_GCC13.md).
 
 1. Identifier la distribution, le compilateur réel et les dépendances.
@@ -292,7 +296,7 @@ cache derrière une option acceptée sans effet.
 ## Suivi
 
 - [x] Comparaison des sources et contrat CLI initial.
-- [x] Validation de la bibliothèque actuelle sur Ubuntu 24.04 / GCC 13.
+- [x] Validation de la bibliothèque de référence du 29 septembre sur Ubuntu 24.04 / GCC 13.
 - [x] Référence OCaml exécutable et banc de comparaison.
 - [x] Métadonnées XML, formats Ivy et statistiques des transports.
 - [x] Agent série et CLI compatible.

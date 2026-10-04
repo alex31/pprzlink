@@ -53,6 +53,11 @@ namespace pprzlink {
 
   const Message &Message::setFieldSI(const std::string &name, std::span<const double> values)
   {
+    return setFieldSIArray(name, values);
+  }
+
+  const Message &Message::setFieldSIArray(const std::string &name, std::span<const double> values)
+  {
     const auto &field = def.getField(name);
     if (!field.getType().isArray()) throw field_type_mismatch(
       std::format("message '{}' field '{}': SI array supplied to XML scalar {}",
@@ -90,6 +95,11 @@ namespace pprzlink {
 
   void Message::getFieldSI(const std::string &name, std::vector<double> &values) const
   {
+    values = getFieldSIArray(name);
+  }
+
+  std::vector<double> Message::getFieldSIArray(const std::string &name) const
+  {
     const auto &value = fieldWithValue(name);
     const auto &field = value.getField();
     if (!field.getType().isArray()) throw field_type_mismatch(
@@ -98,7 +108,7 @@ namespace pprzlink {
       std::format("message '{}' field '{}': SI conversion requires numeric elements", def.getName(), name));
     if (!field.canConvertSI()) throw field_unit_error(std::format(
       "message '{}' field '{}' (XML unit '{}'): SI conversion is unavailable", def.getName(), name, field.getUnit()));
-    auto converted = std::visit([&]<class Stored>(const Stored &raw) -> std::vector<double> {
+    return std::visit([&]<class Stored>(const Stored &raw) -> std::vector<double> {
       if constexpr (requires { typename Stored::value_type; }) {
         if constexpr (Arithmetic<typename Stored::value_type>) {
           std::vector<double> result;
@@ -110,7 +120,6 @@ namespace pprzlink {
       throw field_type_mismatch(std::format("message '{}' field '{}': SI conversion requires numeric elements",
                                             def.getName(), name));
     }, value.getValue());
-    values = std::move(converted);
   }
 
   std::string Message::toString() const

@@ -30,6 +30,8 @@ Le parcours est le suivant :
 10. [Utiliser une radio XBee](#10-utiliser-une-radio-xbee).
 11. [Construire un outil générique ou un adaptateur](#11-construire-un-outil-générique-ou-un-adaptateur).
 12. [Organiser une application durable et diagnostiquer les erreurs](#12-organiser-une-application-durable-et-diagnostiquer-les-erreurs).
+    Les [pilotes de réception par callback](#confier-la-réception-à-un-callback)
+    permettent de rassembler les traitements série/UDP/Ivy sur Asio.
 
 ## 1. Préparer un projet
 
@@ -356,19 +358,22 @@ le getter natif lorsque l'exactitude de ces entiers est nécessaire.
 
 Pour un tableau dont tous les éléments portent la même unité, l'entrée est un
 `std::span<const double>` (également construit depuis `std::array` ou `std::vector`)
-et la sortie un `std::vector<double>&` :
+et le résultat un `std::vector<double>` possédé par l'appelant :
 
 ```cpp
 // Avec un champ XML : <field name="position" type="int16[3]" unit="cm"/>
 std::array<double, 3> position_m{1.0, -2.0, 3.0};
-message.setFieldSI("position", position_m); // Stocke 100, -200, 300 en int16.
-std::vector<double> position_si;
-message.getFieldSI("position", position_si); // Restitue 1.0, -2.0, 3.0 m.
+message.setFieldSIArray("position", position_m); // Stocke 100, -200, 300 en int16.
+const auto position_si = message.getFieldSIArray("position"); // 1.0, -2.0, 3.0 m.
 ```
 
 Ajoutez `<array>` et `<vector>` pour cet extrait. Les longueurs fixes restent
-vérifiées. Si un élément échoue, ni le champ entier ni le tableau de sortie
-d'une lecture ne sont remplacés.
+vérifiées. `getFieldSIArray()` accepte aussi un indice de champ. Le résultat
+peut être conservé ou modifié sans changer le message, comme avec l'accès natif
+`getField<std::vector<T>>()`. Les anciennes surcharges
+`getFieldSI(nom/indice, vector&)` et `setFieldSI(nom, span)` restent disponibles.
+Si un élément échoue, ni le champ entier ni la destination d'une lecture
+historique par référence ne sont remplacés.
 
 L'exemple autonome [SIUnits.cpp](pprzlink/examples/clients/SIUnits.cpp) fournit
 ce XML et vérifie aussi l'encodage puis le décodage natif. Il se lance sans
@@ -679,7 +684,8 @@ Trois détails expliquent ce programme :
 
 Le délai empêche d'attendre indéfiniment. La courte pause évite de mobiliser un
 cœur du processeur lorsque rien n'arrive. Dans une application avec une boucle
-d'événements, vous pourrez programmer ces tentatives depuis cette boucle.
+d'événements Asio, `TransportPump` programme ces tentatives et appelle votre
+traitement ; voir [l'intégration par callback](#confier-la-réception-à-un-callback).
 
 ### Passer à deux programmes
 
@@ -813,7 +819,9 @@ d'adressage attendues par votre application.
 
 Pour un exemple série complet qui émet une altitude puis répond à un PING,
 consultez [SerialAircraft.cpp](pprzlink/examples/clients/SerialAircraft.cpp),
-avec son propre fichier `client_messages.xml`.
+avec son propre fichier `client_messages.xml`. Son `TransportPump` centralise
+la réception par callback ; l'adaptation du programme de ce guide est
+[décrite à l'étape 12](#confier-la-réception-à-un-callback).
 
 ### Essayer deux processus sur des pseudo-terminaux
 
@@ -1255,6 +1263,7 @@ std::cout << "Identifiant radio envoyé : " << static_cast<unsigned>(frameId) <<
 ```
 
 Continuez ensuite à appeler `tryReceive()` et à faire avancer Asio.
+Un `TransportPump` actif effectue ces appels pour vous.
 Le traitement de la réception déclenche aussi les callbacks de statut, même
 si aucun message applicatif n'est rendu. Un statut de transmission égal à
 zéro indique le succès radio ; il ne confirme pas que l'application distante
@@ -1413,6 +1422,8 @@ La destruction se fera dans l'ordre inverse.
 | `PprzTransport`, `XbeeTransport` | La propriété exclusive du `Device` | Configurez le périphérique avant `std::move`. |
 | Périphérique série et transport UDP | Le contexte Asio fourni | Détruisez-les avant le contexte. |
 | Abonnement Ivy | Le callback et ses captures | Gardez l'abonnement actif, et ses données capturées valides. |
+| `TransportPump` | Le transport et le contexte empruntés, ses callbacks | Détruisez-le avant ces objets et sérialisez son arrêt avec leur utilisation. |
+| `IvyAsyncSubscription` | L'abonnement Ivy et du travail pour l'exécuteur Asio | `reset()` annule les livraisons en file ; les invocations déjà admises peuvent finir. |
 
 Pour les transports binaires, effectuez les appels à un même transport
 depuis un seul thread, ou sérialisez-les explicitement. Le fait que le
@@ -1420,7 +1431,8 @@ périphérique série protège ses propres opérations ne rend pas le transport
 entier utilisable simultanément sans coordination.
 
 Avec Ivy en mode threadé, les callbacks exécutent sur le thread de la boucle
-Ivy. Utilisez une file, un mutex ou une promesse pour communiquer avec le
+Ivy, sauf ceux transférés par `IvyAsync.h`, qui s'exécutent sur Asio.
+Pour les callbacks natifs, utilisez une file, un mutex ou une promesse pour communiquer avec le
 reste de votre programme. Déclarez l'état capturé avant le lien pour qu'il
 lui survive. Arrêtez les autres appelants avant de détruire le lien ; ne
 détruisez jamais le lien depuis l'un de ses callbacks. `stop()` peut en
@@ -1429,6 +1441,87 @@ revanche y être appelé.
 En mode `run()`, une erreur de callback est contrôlée lorsque la boucle rend
 la main. En mode threadé, inspectez aussi `getBus().take_callback_error()`
 pour détecter ces erreurs ; ce résultat suit le contrat d'erreur natif Ivy.
+
+### Confier la réception à un callback
+
+`TransportPump` regroupe le timer et les appels à `tryReceive()`. Pour adapter
+le programme série de l'étape 7, ajoutez `<pprzlink/TransportPump.h>` et remplacez
+la boucle depuis `const auto deadline` jusqu'au `throw` final par :
+
+```cpp
+bool messageReceived = false;
+pprzlink::TransportPump pump(context, transport,
+    [&](pprzlink::ReceivedMessage received) {
+        std::cout << received.message.toString() << '\n';
+        messageReceived = true;
+        context.stop(); // Cet exemple se termine au premier message.
+    });
+pump.start();
+context.run_for(10s);
+pump.stop();
+if (!messageReceived) {
+    throw std::runtime_error("Aucun message série reçu en 10 secondes");
+}
+return 0;
+```
+
+Le même code convient à l'étape UDP avec `receiver` à la place de `transport`
+et un délai de `2s`. Le callback possède le `ReceivedMessage` : il peut en
+conserver le message et les métadonnées, sans emprunter un buffer réutilisé.
+Une erreur de réception arrête le pilote et est propagée par l'appel à Asio.
+Le constructeur accepte aussi un gestionnaire d'erreur pour décider de
+reprendre ou d'arrêter, et des options de fréquence et de nombre de messages
+par passage ; voir [le contrat détaillé](API_USAGE.md#réception-par-callback-avec-transportpump).
+
+Dans un programme continu, utilisez `context.run()` et appelez `pump.stop()`
+lors de l'arrêt de votre service. Cet appel arrête l'interrogation et les
+callbacks du pilote ; il ne ferme pas le transport ni la lecture asynchrone
+série, qui peut encore alimenter son tampon. L'application gère donc aussi
+l'arrêt des périphériques ou du contexte. Dans l'exemple ci-dessus,
+`context.stop()` termine la boucle au premier message.
+
+Le pilote utilise encore un timer (5 ms entre passages et 256 tentatives par
+passage par défaut, erreurs comprises), mais cette mécanique est centralisée
+dans la bibliothèque. Il ne crée pas de thread et ne fait pas
+tourner Asio à votre place. Les appels au pilote et au transport sont sérialisés
+sur son exécuteur. Après `stop()`, `start()` peut relancer le pilote ; si le
+contexte est arrêté, appelez également `context.restart()` avant `run()`.
+
+Pour recevoir Ivy sur ce même contexte applicatif, ajoutez
+`<pprzlink/IvyAsync.h>` et `<boost/asio/io_context.hpp>`, puis utilisez
+`subscribeMessageOn()` à la place de l'abonnement natif. Par exemple, avec
+un dictionnaire du guide déjà chargé :
+
+```cpp
+boost::asio::io_context context;
+pprzlink::IvyLink link(dictionary, "guide-recepteur",
+                       "127.255.255.255:2010", true);
+auto subscription = pprzlink::subscribeMessageOn(
+    context.get_executor(), link, "GUIDE_ALTITUDE",
+    [&](std::string sender, pprzlink::Message message) {
+        std::cout << sender << " : " << message.getFieldSI("altitude") << " m\n";
+        context.stop();
+    });
+context.run_for(std::chrono::seconds(10));
+subscription.reset();
+link.stop();
+```
+
+Ivy conserve ici son thread de réception. Les traitements de messages
+s'exécutent dans le thread qui fait tourner `context` ; série, UDP et Ivy
+peuvent donc partager le même état applicatif sur cette boucle. Conservez le
+jeton jusqu'à la fin de l'abonnement : il maintient du travail Asio pour que
+`run()` puisse attendre le premier message. `reset()` supprime les livraisons
+en file ; il n'attend pas une invocation déjà admise. Les exceptions du
+traitement transféré remontent par `run()`/`poll()`, tandis que les erreurs de
+décodage restent côté Ivy. Les contextes et captures doivent survivre à la fin
+des appels en cours.
+
+Si plusieurs threads exécutent le contexte, fournissez le même
+`boost::asio::strand` au pilote (surcharge `context, executor, transport, ...`)
+et aux abonnements Ivy, puis postez également les commandes vers ce strand.
+Avec Qt, le transfert final vers les widgets utilise toujours une connexion
+différée sur le thread graphique ; aucun adaptateur Qt n'est inclus ici.
 
 ### Séparer le traitement métier de la réception
 
@@ -1445,8 +1538,9 @@ void traiterAltitude(const pprzlink::Message &message)
 }
 ```
 
-Appelez-la avec `received->message` dans une boucle UDP/série ou avec
-`message` dans un callback Ivy. Le calcul métier n'a ainsi pas besoin de
+Appelez-la avec `received->message` dans une boucle UDP/série,
+`received.message` dans le callback de `TransportPump`, ou `message` dans
+un callback Ivy. Le calcul métier n'a ainsi pas besoin de
 connaître le transport. Placez cette fonction avant `main()` si vous
 l'ajoutez à l'un des programmes du guide.
 

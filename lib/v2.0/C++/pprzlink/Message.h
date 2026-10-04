@@ -266,17 +266,29 @@ namespace pprzlink {
     /// @param[out] value SI double, unchanged if reading fails.
     /// @throws std::exception Same failures as the returning SI getter.
     void getFieldSI(size_t index, double &value) const { value = getFieldSI(index); }
-    /// Convert all elements of a homogeneous numeric array before replacing the output.
+    /// Return an owned array of doubles in coherent SI units.
+    /// @param[in] name Exact XML field name.
+    /// @return Converted elements, including any prior XML storage quantization.
+    /// @throws std::exception Missing field/value, wrong shape/type, unsupported units or overflow.
+    [[nodiscard]] std::vector<double> getFieldSIArray(const std::string &name) const;
+    /// Read a homogeneous SI array selected by XML position.
+    /// @param[in] index Zero-based XML field position.
+    /// @return Owned SI doubles, as with the name-based array getter.
+    /// @throws std::exception Same failures as the name-based SI array getter.
+    [[nodiscard]] std::vector<double> getFieldSIArray(size_t index) const
+    { return getFieldSIArray(def.getField(index).getName()); }
+
+    /// Compatibility output overload; prefer getFieldSIArray().
     /// @param[in] name Exact XML field name.
     /// @param[out] values SI doubles; unchanged on failure.
     /// @throws std::exception Missing field/value, wrong shape/type, unsupported units or overflow.
     void getFieldSI(const std::string &name, std::vector<double> &values) const;
-    /// Read a homogeneous SI array selected by XML position.
+    /// Compatibility array output overload selected by XML position.
     /// @param[in] index Zero-based XML field position.
     /// @param[out] values SI doubles; unchanged on failure.
     /// @throws std::exception Same failures as the name-based SI array getter.
     void getFieldSI(size_t index, std::vector<double> &values) const
-    { getFieldSI(def.getField(index).getName(), values); }
+    { values = getFieldSIArray(index); }
 
     /// Convert an SI double into the XML unit/type before replacing a scalar.
     /// Integer storage rounds to nearest, with ties away from zero and no saturation.
@@ -292,6 +304,12 @@ namespace pprzlink {
     /// @return This message by const reference, as with setField().
     /// @throws std::exception Wrong shape/extent, unsupported units or an element conversion failure.
     /// The previous field value is unchanged if any element conversion fails.
+    const Message &setFieldSIArray(const std::string &name, std::span<const double> values);
+    /// Compatibility array input overload; prefer setFieldSIArray().
+    /// @param[in] name Exact XML field name.
+    /// @param[in] values Homogeneous SI doubles.
+    /// @return This message by const reference.
+    /// @throws std::exception Same failures as setFieldSIArray(); the previous value is unchanged.
     const Message &setFieldSI(const std::string &name, std::span<const double> values);
 
     /// Binary codec wrappers; offset advances only after a complete field is stored.

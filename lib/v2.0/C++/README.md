@@ -5,9 +5,10 @@ Its compiled [LLNL/units](https://github.com/LLNL/units) dependency is built fro
 the pinned `third_party/llnl_units` submodule and installed with the SDK.
 The default build also includes Ivy **3.18 or newer** with its native C++ wrapper
 (`ivy-cpp`) and pkg-config. Set `PPRZLINK_WITH_IVY=OFF` to build without Ivy.
-Ubuntu 24.04 / GCC 13 is the minimum supported platform. The current sources
-have been built and tested with Ubuntu 24.04's GCC 13.3 and official Noble
-dependencies; see [the validation report](VALIDATION_UBUNTU24_GCC13.md).
+Ubuntu 24.04 / GCC 13 is the minimum supported platform. The initial port
+was built and tested with Ubuntu 24.04's GCC 13.3 and official Noble
+dependencies; see [the dated validation report](VALIDATION_UBUNTU24_GCC13.md).
+Later API changes and their validation are described in [API_USAGE.md](API_USAGE.md).
 Earlier validation also covers GCC 15. Ubuntu 22.04 is no longer targeted.
 For sharing this branch, use [Ivy 3.18.3](https://github.com/alex31/libivy-c/commit/b0bf831702c5bfd1313e83ded62eb14d17198534),
 which includes the cleanup, threading and context-ownership changes validated
@@ -39,6 +40,8 @@ For example, `MessageField("altitude", "float")` describes a field, while its
 | [`FieldValue`](pprzlink/FieldValue.h) | Field definition and actual scalar/array value in a `std::variant`. |
 | [`Message`](pprzlink/Message.h) | A copy of a definition, populated field values and sender/receiver addressing. |
 | [`IvyLink`](pprzlink/IvyLink.h) | Own an Ivy bus and manage subscriptions, sends and requests. |
+| [`IvyAsync`](pprzlink/IvyAsync.h) | Post Ivy subscription callbacks to an application-selected Asio executor, with a move-only cancellation token. |
+| [`TransportPump`](pprzlink/TransportPump.h) | Drive binary reception on an Asio timer and deliver complete messages through callbacks. |
 | [`PprzTransport`](pprzlink/PprzTransport.h) | Implement `Transport` with binary PprzLink v2 framing over an owned `Device`. |
 | [`XbeeTransport`](pprzlink/XbeeTransport.h) | Carry PprzLink v2 messages in XBee 802.15.4 API frames (AP=1), with radio addressing, status events and optional transmit validation. |
 | [`XbeeModem`](pprzlink/XbeeModem.h) | Initialize the modem through AT commands, with guard times, checked replies and response deadlines. |
@@ -169,7 +172,15 @@ SI numbers are doubles: metres, seconds, radians (also for latitude/longitude),
 kelvins for absolute temperatures, and dimensionless ratios for percentages.
 Integer destinations always round to nearest, with ties away from zero. Range
 overflow throws without saturation or replacement. Numeric homogeneous arrays
-use `std::span<const double>` inputs and `std::vector<double>&` outputs.
+use `setFieldSIArray(name, std::span<const double>)` and
+`getFieldSIArray(name)` or `getFieldSIArray(index)`, returning an owned
+`std::vector<double>`. Native arrays already support
+`getField<std::vector<T>>(name)` by value, with the exact XML element type.
+The earlier `setFieldSI(name, span)` and `getFieldSI(name/index, vector&)`
+overloads remain compatible; a failed conversion leaves their destination unchanged.
+The SI array addition was recovered from
+`/tmp/PPRZ_TEST/pprzlink-guide/projet/pprzlink-si-array.patch`; this temporary
+path records its provenance and is not a build dependency.
 NaN/non-finite floating measurements retain their numeric meaning; integer
 writes reject them. A double cannot preserve all 64-bit integer values.
 
@@ -195,7 +206,7 @@ See [the usage guide](guide_d_utilisation.md#convertir-explicitement-les-unités
 for executable examples and the [API notes](API_USAGE.md#champs--unités-si-explicites)
 for the complete contract.
 
-The SI implementation was checked with GCC 13.3 and GCC 16.1. The full 25-test
+The initial SI implementation was checked with GCC 13.3 and GCC 16.1. Its 25-test
 suite, including serial/UDP/Ivy clients and `link++`, passed with GCC 13.3 and
 the installed Ivy 3.18.3 wrapper. GCC 16 SI tests, the Make build without Ivy,
 installed-SDK clients and warning-free Doxygen generation were also checked.
@@ -212,6 +223,11 @@ static/PIC. Selecting `core` or `io` does not look for Ivy, even with a full SDK
 The default `find_package` call retains the historical aggregate targets.
 The Makefile also supports `WITH_IVY=0`; see [API_USAGE.md](API_USAGE.md) for the
 complete build and installed-consumer examples.
+
+The October 4 callback adapters and returning SI arrays passed **27/27 tests
+with Ivy** and **21/21 without Ivy** under GCC 13.3. Installed CMake/Make SDK
+consumers and warning-free Doxygen generation were also checked. See
+[the dated validation and its scope](API_USAGE.md#validation-des-adaptateurs-asio-et-des-tableaux-si-par-valeur).
 
 ## Ground agent: link++
 
@@ -541,6 +557,17 @@ then let destruction unsubscribe or call `unbind()` explicitly. The legacy
 ID-based entry points delegate to the same implementation. Unbinding does not
 wait for a callback already executing; its captured state must remain alive.
 
+For application callbacks on an Asio executor, include the optional
+`<pprzlink/IvyAsync.h>` header and use
+`pprzlink::subscribeMessageOn(executor, link, definitionOrName, callback)` or
+`pprzlink::subscribeSenderOn(executor, link, sender, callback)`. The returned
+`IvyAsyncSubscription` owns the native subscription and suppresses queued
+deliveries when reset or destroyed. An already admitted callback may finish.
+These callbacks always run through `post()` on the chosen executor; the native
+Ivy loop must also run. Retain the token while subscribed: it keeps the Asio
+context active even before the first message. See
+[the execution and cancellation contract](API_USAGE.md#ivy--exécuter-les-callbacks-sur-asio).
+
 Message definitions and field types are loaded at runtime from XML. Reception
 uses `bind_raw`, then builds a `pprzlink::Message` from those definitions.
 `bind_convert` requires a fixed callback signature and is not used for this
@@ -663,6 +690,26 @@ formatting and binary transport round trips. The field-value tests cover
 concepts, supported containers and numeric conversions.
 
 ## Transport, XML and serial-device contracts
+
+For callback reception, include `<pprzlink/TransportPump.h>` and construct
+`TransportPump(context, transport, onMessage)`, then call `start()` and run the
+application's Asio context. The `io` component provides this driver for PPRZ,
+XBee and UDP. A handler receives an owned `ReceivedMessage`. The driver polls
+internally with a 5 ms delay between passes by default, with at most 256 receive
+attempts per pass (including failures); both
+values are configurable through `TransportPumpOptions`. It creates no thread.
+
+`stop()` and destruction cancel future polling, leaving the transport open.
+The serial device's own asynchronous reads may continue, so stopping a pump
+alone does not necessarily let `context.run()` return. The application also
+owns device/context shutdown. The source and context must
+outlive the pump and any in-flight calls. Serialize lifecycle operations and
+transport access on the selected executor; an overload accepts an explicit
+executor to share a strand with `subscribeMessageOn()`. Reception errors stop
+and rethrow through Asio by default, or an error handler can return
+`PumpErrorAction::Continue`/`Stop`. Exceptions from application callbacks stop
+the pump and propagate. See [API_USAGE.md](API_USAGE.md#réception-par-callback-avec-transportpump)
+for examples, cancellation and concurrency details.
 
 `tryReceive()` is the common receive operation for serial PPRZ, XBee, the PPRZ
 frame decoder and UDP. It returns `std::optional<ReceivedMessage>`: a value owns

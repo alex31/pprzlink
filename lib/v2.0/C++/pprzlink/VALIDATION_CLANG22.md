@@ -1,5 +1,11 @@
 # Validation C++ et Ivy — 27 septembre 2026
 
+Rapport historique : les versions, nombres de tests et limitations ci-dessous
+décrivent les sources effectivement validées le 27 septembre. Pour les
+évolutions et validations suivantes, consulter [API_USAGE.md](../API_USAGE.md)
+et [le rapport GCC 13](../VALIDATION_UBUNTU24_GCC13.md). Ce rapport ne constitue
+pas une validation sanitizer des nouveaux adaptateurs de réception.
+
 Machine : Ubuntu 26.04.1 amd64 ; Clang 22.1.2 et GCC 15.2.0.
 Ivy 3.18.2 : commit 933e5a0fac1f18b7fdbbfe431c6df7dd570c5498, poussé sur origin/FEATURE/cpp_wrapper.
 

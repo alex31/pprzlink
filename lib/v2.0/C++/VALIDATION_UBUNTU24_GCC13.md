@@ -2,9 +2,11 @@
 
 Ce rapport décrit la validation initiale, avant l'implémentation de `link++`.
 Les résultats du nouvel agent et des extensions de bibliothèque sont consignés
-dans [LINK_CPP_VALIDATION.md](LINK_CPP_VALIDATION.md).
+dans [LINK_CPP_VALIDATION.md](LINK_CPP_VALIDATION.md), puis dans
+[API_USAGE.md](API_USAGE.md) pour les évolutions de l'API. Les nombres et
+commandes ci-dessous concernent uniquement les révisions indiquées.
 
-**Résultat : le code C++ actuel compile avec le GCC 13 fourni par Ubuntu 24.04,
+**Résultat historique : le code C++ testé compile avec le GCC 13 fourni par Ubuntu 24.04,
 et les 12 tests passent. Aucune correction du source C++ n'a été nécessaire.**
 
 Cette validation porte sur PPRZLINK
@@ -182,6 +184,7 @@ de GCC 13, ARM, du matériel XBee réel ni le futur agent `link++`.
 Les sanitizers validés précédemment avec les autres compilateurs n'ont pas
 été relancés ici.
 
-Pour maintenir cette compatibilité, le guide prévoit une construction CI
-Ubuntu 24.04 avec GCC 13 explicitement sélectionné, Ivy épinglé et CTest.
-Cette CI reste à ajouter ; la présente vérification est une exécution locale.
+Une construction CI Ubuntu 24.04 avec GCC 13 explicitement sélectionné, Ivy
+épinglé et CTest a depuis été ajoutée dans `.github/workflows/cpp-ubuntu24.yml`.
+La présente vérification reste une exécution locale historique ; elle ne
+constitue pas un résultat d'exécution de cette CI.

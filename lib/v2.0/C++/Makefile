@@ -40,7 +40,7 @@ LLNL_UNITS_INPUTS = $(wildcard $(LLNL_UNITS_DIR)/CMakeLists.txt $(LLNL_UNITS_DIR
 PPRZLINK_HEADERS=$(wildcard pprzlink/*.h)
 PPRZLINK_SRC=$(wildcard pprzlink/*.cpp)
 ifeq ($(WITH_IVY),0)
-PPRZLINK_HEADERS:=$(filter-out pprzlink/IvyLink.h,$(PPRZLINK_HEADERS))
+PPRZLINK_HEADERS:=$(filter-out pprzlink/IvyLink.h pprzlink/IvyAsync.h,$(PPRZLINK_HEADERS))
 PPRZLINK_SRC:=$(filter-out pprzlink/IvyLink.cpp,$(PPRZLINK_SRC))
 DEPENDENCIES=tinyxml2
 else

@@ -67,14 +67,15 @@ set(CORE_SOURCES
     pprzlink/UnitConversion.cpp pprzlink/UnitAliases.cpp
     pprzlink/PprzTransport.cpp pprzlink/PprzFrameCodec.cpp
     pprzlink/XbeeTransport.cpp pprzlink/XbeeModem.cpp)
-set(IO_SOURCES pprzlink/BoostSerialPortDevice.cpp pprzlink/UdpTransport.cpp)
+set(IO_SOURCES pprzlink/BoostSerialPortDevice.cpp pprzlink/UdpTransport.cpp pprzlink/TransportPump.cpp)
 set(PUBLIC_HEADERS
     pprzlink/Device.h pprzlink/FieldValue.h pprzlink/BinaryCodec.h pprzlink/TextCodec.h
     pprzlink/IvyMessageCodec.h pprzlink/Message.h pprzlink/MessageDefinition.h
     pprzlink/MessageDictionary.h pprzlink/MessageField.h pprzlink/MessageFieldTypes.h
     pprzlink/PprzTransport.h pprzlink/PprzFrameCodec.h pprzlink/TransportStatistics.h
     pprzlink/XbeeTransport.h pprzlink/XbeeModem.h pprzlink/Transport.h
-    pprzlink/ReceivedMessage.h pprzlink/BoostSerialPortDevice.h pprzlink/UdpTransport.h)
+    pprzlink/ReceivedMessage.h pprzlink/BoostSerialPortDevice.h pprzlink/UdpTransport.h
+    pprzlink/TransportPump.h)
 if(UNIX)
     list(APPEND IO_SOURCES pprzlink/PosixFileDevice.cpp)
     list(APPEND PUBLIC_HEADERS pprzlink/PosixFileDevice.h)
@@ -119,7 +120,7 @@ if(PPRZLINK_WITH_IVY)
     add_library(pprzlink::ivy ALIAS pprzlink_ivy)
     list(APPEND LEGACY_OBJECTS $<TARGET_OBJECTS:pprzlink_ivy_objects>)
     list(APPEND LEGACY_LIBRARIES PkgConfig::IVY)
-    list(APPEND PUBLIC_HEADERS pprzlink/IvyLink.h)
+    list(APPEND PUBLIC_HEADERS pprzlink/IvyLink.h pprzlink/IvyAsync.h)
 endif()
 
 add_library(pprzlink++ SHARED ${LEGACY_OBJECTS})
@@ -202,9 +203,13 @@ if(BUILD_TESTING)
     add_pprzlink_test(receive ReceiveTest.cpp)
     add_pprzlink_test(udp_transport UdpTransportTest.cpp)
     target_link_libraries(udp_transport_test PRIVATE pprzlink::io)
+    add_pprzlink_test(transport_pump TransportPumpTest.cpp)
+    target_link_libraries(transport_pump_test PRIVATE pprzlink::io)
     if(PPRZLINK_WITH_IVY)
         add_pprzlink_test(ivy_link IvyLinkTest.cpp)
         target_link_libraries(ivy_link_test PRIVATE pprzlink::ivy)
+        add_pprzlink_test(ivy_async IvyAsyncTest.cpp)
+        target_link_libraries(ivy_async_test PRIVATE pprzlink::ivy)
     endif()
     add_pprzlink_test(transport TransportTest.cpp)
     add_pprzlink_test(xbee_transport XbeeTransportTest.cpp)

@@ -69,11 +69,11 @@ Telemetry messages are sent from the aircraft to the ground and are defined in t
 
 **Datalink**
 
-Datalink messages are sent from the ground to the aircraft and are defined in the `datalink` class of the [messages.xml](master/message_definitions/v1.0/messages.xml) file.
+Datalink messages are sent from the ground to the aircraft and are defined in the `datalink` class of the [messages.xml](message_definitions/v1.0/messages.xml) file.
 
 **Ground**
 
-Ground messages are sent to the ground network agents (GCS, server, link, etc) and are defined in the `ground` class of the [messages.xml](master/message_definitions/v1.0/messages.xml) file.
+Ground messages are sent to the ground network agents (GCS, server, link, etc) and are defined in the `ground` class of the [messages.xml](message_definitions/v1.0/messages.xml) file.
 
 **Alert**
 

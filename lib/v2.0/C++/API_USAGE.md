@@ -1,6 +1,7 @@
 # API pprzlink++ : simplification par les exemples
 
-Première itération réalisée le 29 septembre 2026. Les clients de référence sont
+Première itération réalisée le 29 septembre 2026 ; adaptateurs Asio et tableaux
+SI par valeur ajoutés le 4 octobre 2026. Les clients de référence sont
 un récepteur Ivy, un simulateur d'avion série, un enregistreur UDP et un émetteur
 de commande UDP. Ils utilisent
 uniquement les en-têtes publics de la bibliothèque. Leur répertoire peut être
@@ -9,9 +10,9 @@ copié dans un autre projet et compilé avec le SDK installé.
 | Exemple | Parcours et limite qu'il permet d'observer |
 | --- | --- |
 | [SIUnits.cpp](pprzlink/examples/clients/SIUnits.cpp) | Consulter les unités XML/SI, arrondir une altitude vers l'entier XML, convertir les températures/tableaux et conserver l'encodage natif, sans I/O. |
-| [IvyReceiver.cpp](pprzlink/examples/clients/IvyReceiver.cpp) | S'abonner, lire une altitude en mètres par `getFieldSI()`, arrêter la boucle. L'abonnement est possédé par une variable locale ; le délai utilise encore l'API native Ivy. |
-| [SerialAircraft.cpp](pprzlink/examples/clients/SerialAircraft.cpp) | Ouvrir un port, publier une altitude en mètres par `setFieldSI()`, répondre à PING. L'application fournit et fait tourner son contexte Asio. |
-| [UdpRecorder.cpp](pprzlink/examples/clients/UdpRecorder.cpp) | Recevoir trois messages avec leur adresse source et leur taille. Aucun bus Ivy n'est démarré ni lié au programme. |
+| [IvyReceiver.cpp](pprzlink/examples/clients/IvyReceiver.cpp) | S'abonner avec `subscribeMessageOn()`, lire une altitude en mètres par `getFieldSI()`, arrêter l'attente. Le traitement et le délai s'exécutent sur Asio ; Ivy possède son thread natif. |
+| [SerialAircraft.cpp](pprzlink/examples/clients/SerialAircraft.cpp) | Ouvrir un port, publier une altitude en mètres par `setFieldSI()`, répondre à PING via `TransportPump`. L'application fournit et fait tourner son contexte Asio. |
+| [UdpRecorder.cpp](pprzlink/examples/clients/UdpRecorder.cpp) | Recevoir trois messages via `TransportPump`, avec leur adresse source et leur taille. Aucun bus Ivy n'est démarré ni lié au programme. |
 | [UdpSettingSender.cpp](pprzlink/examples/clients/UdpSettingSender.cpp) | Remplir les deux champs d'une commande dans un seul `setField()`, puis envoyer son datagramme à un pair de test local. |
 | [PtyRequester.cpp](pprzlink/examples/clients/PtyRequester.cpp) et [PtyResponder.cpp](pprzlink/examples/clients/PtyResponder.cpp) | Échanger une requête et une altitude entre deux processus sur des ports virtuels, avec le XML du guide. |
 | [PtyAgent.cpp](pprzlink/examples/clients/PtyAgent.cpp) | Lancer le même agent aux deux extrémités : chaque processus publie et reçoit une altitude, sans rôle lié au port. |
@@ -45,6 +46,12 @@ uniquement à `pprzlink::io` et peuvent également utiliser le SDK sans Ivy.
 4. UDP devient une API publique. Les composants CMake `core`, `io` et `ivy`
    permettent de choisir les dépendances ; les cibles historiques restent
    disponibles. La construction sans Ivy et les clients qui la consomment sont testés.
+5. `TransportPump` fournit la réception par callback sur un exécuteur Asio.
+   `subscribeMessageOn()` et `subscribeSenderOn()` y transfèrent les abonnements
+   Ivy. L'application possède la boucle et décide des threads ; le polling
+   binaire et la boucle native Ivy restent internes à leurs mécanismes respectifs.
+6. `getFieldSIArray()` rend un `std::vector<double>` possédé, comme l'accès natif
+   `getField<std::vector<T>>()`. Les anciens paramètres de sortie restent disponibles.
 
 Les exemples et les tests de leurs échanges sont la référence pour faire
 évoluer ces contrats. Les conventions de routage, PING périodiques et rapports
@@ -95,14 +102,20 @@ Pour un tableau homogène :
 
 ```cpp
 std::array<double, 3> position_m{1.0, 2.0, 3.0};
-message.setFieldSI("position", position_m); // Champ numérique XML de trois éléments.
-std::vector<double> position_si;
-message.getFieldSI("position", position_si);
+message.setFieldSIArray("position", position_m); // Champ numérique XML de trois éléments.
+const auto position_si = message.getFieldSIArray("position"); // std::vector<double> possédé.
 ```
 
-Les surcharges scalaire et tableau conservent la forme et les contrôles de
+`getFieldSIArray()` accepte un nom ou un indice XML et rend un tableau indépendant
+du message. `setFieldSIArray()` accepte un `std::span<const double>`, notamment
+construit depuis un `std::array` ou un `std::vector`. Les anciens appels
+`getFieldSI(nom/indice, vector&)` et `setFieldSI(nom, span)` restent disponibles
+et délèguent aux mêmes conversions.
+
+Les accès scalaires et tableaux conservent la forme et les contrôles de
 taille XML. Une conversion qui échoue ne remplace ni le champ, ni la destination
-d'une lecture. `setFieldSI()` renvoie `const Message&`, comme `setField()` ;
+d'une lecture historique par référence. `setFieldSIArray()` et `setFieldSI()`
+renvoient `const Message&`, comme `setField()` ;
 on peut écrire `transport.sendMessage(message.setFieldSI("altitude", 123.5))`
 lorsque le message est complet. Les surcharges scalaires de `getFieldSI()`
 acceptent aussi un indice XML et un paramètre de sortie `double&`.
@@ -244,6 +257,10 @@ lève maintenant `field_type_mismatch`, dérivée de `std::bad_variant_access`,
 avec le nom du champ, son type XML et le type demandé. Les anciens blocs `catch`
 restent valables. `getFieldAs<T>()` ne parse pas les chaînes et ne convertit pas
 encore les tableaux ; leurs getters conservent les types d'éléments du XML.
+L'accès natif `message.getField<std::vector<T>>(nom)` renvoie déjà son tableau
+par valeur ; `T` doit correspondre exactement au type XML. Le nouvel accès
+`getFieldSIArray()` fournit le même usage par valeur pour les tableaux SI,
+avec des éléments `double` après conversion d'unité.
 
 ## Réception : un message et ses métadonnées
 
@@ -278,6 +295,87 @@ informations distinctes. `localEndpoint()` expose le port attribué si le port
 local demandé était zéro. Les trames incomplètes sont abandonnées à la frontière
 du datagramme pour éviter de mélanger deux émetteurs.
 
+## Réception par callback avec TransportPump
+
+`<pprzlink/TransportPump.h>` fournit un pilote du composant `io`, utilisable
+avec un `Transport&` (`PprzTransport`, `XbeeTransport`) ou un `UdpTransport&`.
+Il prend en charge le timer et les tentatives de réception :
+
+```cpp
+pprzlink::TransportPump pump(context, transport,
+    [](pprzlink::ReceivedMessage received) {
+        // Le message, sa taille et ses métadonnées sont possédés par received.
+        traiter(received.message);
+    });
+pump.start();
+context.run(); // La boucle peut aussi faire avancer d'autres opérations Asio.
+```
+
+Le callback reçoit un message complet par valeur. Le pilote ne crée aucun
+thread et n'exécute pas `run()` à votre place. Il conserve un timer en attente
+pendant son activité ; `stop()` ou sa destruction arrête les tentatives de
+réception et les livraisons du pilote. Le transport reste ouvert et la lecture
+Asio du périphérique série peut continuer à alimenter son tampon. Cet arrêt
+ne suffit donc pas à terminer `context.run()` si d'autres opérations restent
+actives ; l'application gère aussi l'arrêt de ses périphériques ou du contexte.
+`start()` est idempotent lorsqu'il est déjà actif et permet de reprendre après
+un arrêt ; le premier traitement est planifié, jamais appelé depuis `start()`.
+`isRunning()` expose son état et `getExecutor()` l'exécuteur utilisé.
+Si le contexte s'est déjà arrêté, l'application doit le `restart()` avant de
+le faire tourner à nouveau.
+
+`TransportPumpOptions` contient `interval` (5 ms par défaut) et
+`maxMessagesPerPoll` (256 par défaut). Ce plafond compte les tentatives de
+réception, erreurs comprises, pour laisser avancer les autres handlers.
+L'intervalle est attendu après chaque passage ; ces deux paramètres doivent
+être strictement positifs. Le pilote conserve une interrogation
+périodique : il simplifie l'API applicative sans rendre les lectures UDP ni le
+décodage série directement déclenchés par une notification d'I/O. Avec XBee,
+les tentatives font aussi progresser l'initialisation et traitent les statuts,
+même sans message applicatif. Les retransmissions et échéances propres à
+`link++` restent dans l'agent.
+
+Une erreur de réception arrête le pilote et remonte par `run()`/`poll()` en
+l'absence de gestionnaire. Pour définir une politique explicite :
+
+```cpp
+pprzlink::TransportPump pump(context, transport, onMessage,
+    [](std::exception_ptr error) {
+        try {
+            std::rethrow_exception(error);
+        } catch (const pprzlink::field_type_mismatch& failure) {
+            // Journaliser la trame refusée ; la prochaine tentative peut reprendre.
+            return pprzlink::PumpErrorAction::Continue;
+        } catch (...) {
+            return pprzlink::PumpErrorAction::Stop;
+        }
+    },
+    {.interval = std::chrono::milliseconds(5), .maxMessagesPerPoll = 64});
+```
+
+Ce gestionnaire ne reçoit que les erreurs de `tryReceive()`. Une exception
+du callback de message ou du gestionnaire d'erreur arrête le pilote et remonte
+sur son exécuteur, sans être réinterprétée comme une trame invalide.
+
+Le contexte et le transport sont empruntés : ils doivent survivre au pilote
+et aux appels en cours. `start()`, `stop()`, les consultations d'état, les accès
+au transport et la destruction doivent être sérialisés sur le même exécuteur ; une préparation
+avant le lancement de la boucle est également possible. L'arrêt n'attend pas
+un traitement déjà commencé. Ne lancez pas en parallèle votre ancienne boucle
+de réception sur le même transport.
+
+Pour partager un contexte exécuté par plusieurs threads, fournissez un strand :
+
+```cpp
+auto strand = boost::asio::make_strand(context);
+pprzlink::TransportPump pump(context, strand, transport, onMessage);
+// Fournir aussi strand à subscribeMessageOn() et poster les envois dessus.
+```
+
+Inclure `<boost/asio/strand.hpp>` pour cet exemple. L'exécuteur doit appartenir
+au contexte fourni au pilote. Partager un `io_context` ne suffit pas à
+sérialiser ses handlers lorsque plusieurs threads exécutent `run()`.
+
 ## Ivy : utiliser la propriété déjà fournie par Ivy C++
 
 ```cpp
@@ -297,16 +395,61 @@ Conserver le jeton aussi longtemps que l'abonnement est souhaité. Un callback
 déjà commencé peut finir après le désabonnement : son état capturé doit rester
 vivant. Les callbacks exécutent sur la boucle Ivy ; l'exemple utilise la boucle
 sur le thread appelant. Une interface graphique doit encore transférer les
-mises à jour sur son propre thread. Aucun nouveau système d'abonnement n'est
-introduit au-dessus de celui d'Ivy.
+mises à jour sur son propre thread. Cet abonnement natif reste disponible ;
+l'adaptateur suivant ajoute le transfert vers une boucle Asio existante.
+
+## Ivy : exécuter les callbacks sur Asio
+
+L'en-tête facultatif `<pprzlink/IvyAsync.h>` ajoute ces fonctions libres :
+
+```cpp
+auto subscription = pprzlink::subscribeMessageOn(
+    context.get_executor(), link, "CLIENT_ALTITUDE",
+    [](std::string sender, pprzlink::Message message) {
+        // Exécuté dans la boucle Asio qui fait tourner context.
+        const auto altitude = message.getFieldSI("altitude");
+        // Traiter sender et altitude.
+    });
+// Même contrat avec une MessageDefinition ou avec subscribeSenderOn().
+context.run();
+```
+
+La boucle Ivy doit déjà tourner, par exemple avec `threadedIvy=true`.
+L'abonnement reçoit et décode sur cette boucle puis poste un message possédé
+sur l'exécuteur fourni, sans appeler le code utilisateur sous un verrou.
+L'appel est toujours différé, même si l'émetteur se trouve déjà sur cet exécuteur.
+L'adaptateur ne crée pas de thread. Pour plusieurs threads exécutant le même
+contexte, fournissez le même `strand` à tous les traitements qui partagent
+un état ou un transport ; un simple `io_context::executor_type` ne les sérialise pas.
+
+Le jeton `IvyAsyncSubscription` est déplaçable et non copiable ; `reset()` ou
+sa destruction désabonne et supprime les livraisons en attente. Une invocation
+déjà admise peut finir : l'annulation n'est pas une attente de terminaison.
+`reset()` est idempotent et utilisable depuis son callback. Il faut sérialiser
+les modifications du jeton lui-même. L'abonnement conserve du travail Asio :
+`run()` peut donc attendre un premier message ; annulez l'abonnement lorsque
+vous n'attendez plus de messages, ou arrêtez explicitement le contexte.
+
+Le contexte/exécuteur et les objets capturés doivent rester valides jusqu'à
+la fin des callbacks. Les exceptions du traitement utilisateur remontent par
+`io_context::run()` ou `poll()`, comme pour les autres handlers Asio. Les erreurs
+de décodage Ivy restent gérées par le bus natif et `take_callback_error()`.
+Il n'y a pas de limite de file applicative ni de politique de rejet dans cet
+adaptateur : les callbacks doivent rester courts, ou l'application doit prévoir
+son propre mécanisme de réduction du débit.
+
+Cette extension concerne les abonnements persistants. `sendRequest()` conserve
+son mécanisme Ivy et ne devient pas une RPC commune aux transports. Aucun
+adaptateur Qt ni future/coroutine n'est ajouté : Qt peut recevoir les données
+par une connexion différée, et les commandes vers Asio passent par `post()`.
 
 ## Dépendances choisies par le client
 
 | Composant CMake | Contenu |
 | --- | --- |
 | `pprzlink::core` | XML, messages, conversions SI LLNL/units, codecs, framing PPRZ/XBee et interface abstraite Device. TinyXML2 et en-têtes Boost ; aucune dépendance Ivy. |
-| `pprzlink::io` | Série Boost.Asio, fichiers POSIX et UDP ; dépend de `core` et des threads. |
-| `pprzlink::ivy` | IvyLink ; dépend de `core`, Ivy C++ et des threads. |
+| `pprzlink::io` | Série Boost.Asio, fichiers POSIX, UDP et `TransportPump` ; dépend de `core` et des threads. |
+| `pprzlink::ivy` | IvyLink et adaptateur facultatif `IvyAsync.h` ; dépend de `core`, Ivy C++ et des threads. |
 
 Les composants sont des archives statiques construites avec PIC. Les cibles
 historiques `pprzlink++` et `pprzlink++_static` restent respectivement partagée
@@ -369,6 +512,42 @@ cmake --build /tmp/pprzlink-client-build -j4
 Ivy. Le standard C++23 et les dépendances transitives proviennent des cibles
 installées ; le projet client ne les redéclare pas.
 
+## Validation des adaptateurs Asio et des tableaux SI par valeur
+
+Validation du 4 octobre 2026 avec GCC 13.3, Boost 1.83 et Ivy 3.18.3 pour les
+constructions qui l'activent :
+
+- Construction CMake Debug avec LLNL/units fourni : **27/27 tests réussis**,
+  dont les échanges réels série sur PTY, UDP et Ivy des trois clients migrés.
+  Le test `transport_pump` repasse après ajout des cas de redémarrage depuis
+  le callback et de destruction depuis le gestionnaire d'erreur.
+- Construction CMake séparée sans Ivy, avec LLNL/units du SDK installé :
+  **21/21 tests réussis**.
+- SDK CMake installé : les huit clients autonomes compilent. Le banc
+  `ClientExamplesTest.py` passe avec série/UDP/Ivy et avec les altitudes XML
+  `int32` en millimètres ; `si_units` vérifie aussi les tableaux SI par valeur.
+- Make GCC 13, `WITH_IVY=0` : bibliothèques statique/partagée, compilation LLNL
+  et installation réussies. Le SDK installe `TransportPump.h` et exclut les
+  en-têtes Ivy ; un consommateur autonome vérifie le callback, son arrêt et
+  les tableaux SI par valeur.
+- Doxygen 1.9.8 : génération réussie, journal d'avertissements vide. Les
+  nouveaux extraits du guide série/UDP/Ivy et les usages de strand/gestionnaire
+  d'erreur compilent également en contrôle syntaxique avec GCC 13.
+
+L'interface SI provient du patch retrouvé dans
+`/tmp/PPRZ_TEST/pprzlink-guide/projet/pprzlink-si-array.patch`.
+`getField<std::vector<T>>()` rendait déjà les tableaux natifs par valeur ;
+l'ajout récupéré concerne `getFieldSIArray()` et `setFieldSIArray()`.
+Les surcharges historiques avec paramètre de sortie sont conservées et testées.
+
+Traces locales sous `/tmp/PPRZ_TEST/` : `async-reception-build`,
+`async-reception-noivy`, `async-reception-sdk`, `async-reception-make`,
+`async-reception-make-sdk` et `async-reception-make.log`. Ce sont des traces de
+validation, pas des prérequis de construction. Cette campagne ne comprend
+pas d'essai matériel physique, d'intégration Qt ni de nouvelle comparaison
+différentielle avec OCaml. Les rapports datés ci-dessous et les autres rapports
+du dépôt conservent leurs résultats historiques distincts.
+
 ## Validation du remplissage multiple
 
 La validation du 29 septembre, après ajout de la surcharge de `setField()` et
@@ -425,11 +604,11 @@ mais les écritures numériques invalides sont désormais rejetées.
 
 | Observation dans les exemples | Amélioration à examiner ensuite |
 | --- | --- |
-| Le récepteur Ivy utilise `getBus()` pour son délai. | Délais et annulation des requêtes au niveau PPRZLINK ; `sendRequest()` conserve encore son interface historique. |
-| Le simulateur fait tourner Asio ; l'enregistreur interroge UDP périodiquement. | Réception asynchrone intégrable dans une boucle existante, sans créer de thread implicite. |
-| Les callbacks Ivy peuvent s'exécuter sur un thread distinct. | Exemple d'intégration GUI avec transfert explicite des événements et durée de vie des objets. |
-| La lecture convertie couvre les scalaires. | Évaluer les conversions explicites de tableaux à partir d'un vrai client qui en a besoin. |
-| Le récepteur écrit l'unité « m » dans son code. | Exposer davantage de métadonnées XML, comme les unités et les valeurs d'énumération, pour un afficheur générique. |
+| Le délai du récepteur Ivy est un timer Asio ; `sendRequest()` garde son interface historique. | Délais et annulation des requêtes au niveau PPRZLINK, avec corrélation adaptée à chaque protocole. |
+| `TransportPump` centralise l'interrogation des transports sur Asio. | Remplacer progressivement le timer interne par des notifications d'I/O, sans changer le traitement applicatif. |
+| `IvyAsync.h` transfère les abonnements vers l'exécuteur Asio choisi. | Exemple d'intégration Qt et politique de surcharge explicite si le consommateur est trop lent. |
+| `getFieldAs<T>()` convertit le type numérique des scalaires ; les tableaux SI ont leur accès dédié. | Évaluer la conversion explicite du type numérique des tableaux natifs à partir d'un vrai client qui en a besoin. |
+| Les unités XML/SI sont exposées ; le récepteur affiche encore « m » explicitement. | Exploiter ces métadonnées dans un afficheur générique et envisager les valeurs d'énumération. |
 
 Ces points ne sont pas masqués par une nouvelle abstraction générale. Chaque
 extension future devra raccourcir ou clarifier un client concret, avec ses tests.

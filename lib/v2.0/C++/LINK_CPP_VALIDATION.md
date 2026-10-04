@@ -9,6 +9,9 @@ réception avec métadonnées, abonnements Ivy possédés par l'appelant, conver
 contrôlées et SDK modulaire. Ses 19 tests incluent les mêmes 17 scénarios de
 comparaison décrits ici. Les résultats à 15 tests ci-dessous décrivent la
 validation initiale de l'agent.
+Les adaptateurs de réception Asio et les tableaux SI retournés par valeur sont
+des évolutions ultérieures décrites dans ce même document d'API. Les résultats
+historiques ci-dessous ne valent pas validation de ces ajouts.
 
 ## Ce qui est livré
 

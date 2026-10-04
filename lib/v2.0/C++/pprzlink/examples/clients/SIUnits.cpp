@@ -25,7 +25,7 @@ int main()
     pprzlink::Message message(dictionary.getDefinition("SI_EXAMPLE"));
     message.setFieldSI("altitude", 1.23456); // Nearest XML integer: 1235 mm.
     message.setFieldSI("temperature", 293.15); // XML float: 20 Celsius.
-    message.setFieldSI("position", std::array<double, 3>{1.0, -2.0, 3.0});
+    message.setFieldSIArray("position", std::array<double, 3>{1.0, -2.0, 3.0});
 
     const auto &field = message.getFieldDefinition("altitude");
     std::cout << field.getUnit() << " -> " << field.getSIUnit() << '\n'
@@ -41,8 +41,7 @@ int main()
     if (!received || received->getField<int32_t>("altitude") != 1235) {
       throw std::runtime_error("Native XML storage was not preserved");
     }
-    std::vector<double> position;
-    received->getFieldSI("position", position);
+    const std::vector<double> position = received->getFieldSIArray("position");
     std::cout << "Decoded position:";
     for (double metres : position) std::cout << ' ' << metres;
     std::cout << " m\n";
