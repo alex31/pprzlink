@@ -587,8 +587,9 @@ un message entier.
   indique la taille de la trame correspondante.
 
 Un résultat vide n'est donc ni une fin de fichier ni une preuve de panne.
-La même opération sera utilisée avec UDP, PPRZ série et XBee. Si plusieurs
-trames sont disponibles, rappelez-la pour obtenir les messages suivants.
+Ce décodeur est utilisé sans I/O. Si plusieurs trames sont disponibles,
+rappelez-le pour obtenir les messages suivants. Les transports des étapes
+suivantes distribueront les messages par abonnement, avec `bind()`.
 
 ### Essayer aussi le format texte
 
@@ -648,7 +649,7 @@ Remplacez maintenant **tout `main.cpp`** par :
 #include <exception>
 #include <iostream>
 #include <stdexcept>
-#include <thread>
+#include <boost/asio/steady_timer.hpp>
 
 int main(int argc, char **argv)
 {
@@ -671,22 +672,28 @@ int main(int argc, char **argv)
         altitude.setReceiverId(0);
         altitude.setFieldSI("altitude", 123.5);
 
+        bool received = false;
+        boost::asio::steady_timer timeout(context, 2s);
+        timeout.async_wait([&](const boost::system::error_code &error) {
+            if (!error) receiver.stop();
+        });
+        receiver.bind("GUIDE_ALTITUDE",
+            [&](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
+                const auto &peer = info.udpPeer.value();
+                std::cout << "Reçu de " << peer.address << ':' << peer.port
+                          << " : " << message.toString() << '\n';
+                received = true;
+                receiver.stop();
+                timeout.cancel();
+            });
+        receiver.start();
         const auto destination = receiver.localEndpoint();
         const auto sent = sender.sendMessage(altitude, destination);
         std::cout << "Envoyé : " << sent << " octets vers le port "
                   << destination.port << '\n';
-
-        const auto deadline = std::chrono::steady_clock::now() + 2s;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (auto received = receiver.tryReceive()) {
-                const auto &peer = received->udpPeer.value();
-                std::cout << "Reçu de " << peer.address << ':' << peer.port
-                          << " : " << received->message.toString() << '\n';
-                return 0;
-            }
-            std::this_thread::sleep_for(5ms);
-        }
-        throw std::runtime_error("Aucun message UDP reçu dans le délai prévu");
+        context.run();
+        if (!received) throw std::runtime_error("Aucun message UDP reçu dans le délai prévu");
+        return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
@@ -712,12 +719,13 @@ Trois détails expliquent ce programme :
    permet de connaître le port réellement attribué.
 2. `sendMessage()` demande une destination IP/port explicite. Le destinataire
    PPRZLINK, ici 0, est une information distincte de cette destination réseau.
-3. Les sockets UDP utilisés ici font des opérations non bloquantes interrogées
-   par `tryReceive()`. Cet exemple n'a pas besoin de `context.run()`.
+3. `bind()` conserve la lambda à appeler lorsque le message arrive. `start()`
+   active la lecture et `context.run()` exécute les callbacks Asio sur le thread
+   appelant. Aucun thread supplémentaire n'interroge les canaux.
 
-Le délai empêche d'attendre indéfiniment. La courte pause évite de mobiliser un
-cœur du processeur lorsque rien n'arrive. Dans une application avec une boucle
-d'événements, vous pourrez programmer ces tentatives depuis cette boucle.
+Le timer empêche d'attendre indéfiniment. Asio attend les données ou l'échéance ;
+aucune boucle avec `sleep_for()` n'est nécessaire. `stop()` annule les lectures
+de ce récepteur ; l'annulation du timer permet à `context.run()` de terminer.
 
 ### Passer à deux programmes
 
@@ -727,19 +735,53 @@ destination à l'envoi. Pour écouter sur les interfaces réseau de la machine,
 utilisez l'adresse locale `"0.0.0.0"` ; l'émetteur devra viser l'adresse IP
 réelle du récepteur.
 
-Si votre protocole répond au port d'origine, `received->udpPeer` donne la
+Si votre protocole répond au port d'origine, `info.udpPeer` donne la
 destination de la réponse. D'autres applications, dont certaines configurations
 Paparazzi, utilisent un port montant distinct : c'est une décision de votre
 application, pas une déduction faite par la bibliothèque.
 
-`ReceivedMessage` possède ses métadonnées par valeur. Une réception suivante
-ne remplacera donc pas l'adresse associée au message que vous avez conservé.
+Le callback emprunte le `Message` et le `ReceiveInfo` pendant son invocation.
+Copiez ces objets pour les conserver. Les vues `span`/`string_view` empruntées
+ne doivent pas survivre au message qui les contient.
 Le décodeur UDP abandonne les trames incomplètes à la fin d'un datagramme ;
 il ne mélange pas les morceaux de deux datagrammes.
 
-**À essayer :** envoyez trois altitudes et adaptez la boucle pour recevoir
-trois messages. Vous pouvez aussi envoyer `GUIDE_SETTING` après avoir rempli
+**À essayer :** envoyez trois altitudes et comptez les invocations de la lambda
+avant d'arrêter le récepteur au troisième message. Vous pouvez aussi envoyer `GUIDE_SETTING` après avoir rempli
 ses deux champs : le mécanisme de transport reste identique.
+
+### Les trois modes de l'atelier
+
+L'exemple [WorkshopUdp.cpp](pprzlink/examples/clients/WorkshopUdp.cpp) propose
+`both`, `emitter` et `receiver`. Pour l'utiliser comme `main.cpp` :
+
+```sh
+cp "$PPRZLINK_CPP/pprzlink/examples/clients/WorkshopUdp.cpp" main.cpp
+cmake --build build -j4
+./build/atelier messages.xml both
+```
+
+Dans deux terminaux, lancez le mode `receiver`, puis `emitter`. Le récepteur
+écoute sur 127.0.0.1:4242 pendant 30 secondes, ou jusqu'à Ctrl+C.
+
+### Choisir les messages et leurs émetteurs
+
+Le callback simple reçoit seulement le message. Pour écouter tous les types,
+utilisez `receiver.bind(pprzlink::ALL, lambda)`. Le récepteur conserve le binding ;
+il n'est pas nécessaire de garder l'identifiant retourné.
+
+```cpp
+receiver.bind("GUIDE_ALTITUDE", {.senderId = 42},
+    [](const pprzlink::Message &message) {
+        std::cout << message.getFieldSI("altitude") << " m\n";
+    });
+```
+
+`senderId` sélectionne l'émetteur PPRZLINK. Pour sélectionner l'origine réseau,
+utilisez `udpPeer` (IP et port), `udpAddress` (IP seule) ou `udpPort` (port seul).
+Ces critères sont distincts et peuvent être combinés. `receiverId`, `className`,
+`classId`, `componentId` et un prédicat `where` complètent la sélection.
+Voir le [contrat des filtres](API_USAGE.md#réception-réactive--abonnements-et-filtres).
 
 ## 7. Passer à une liaison série
 
@@ -754,6 +796,7 @@ et les mêmes paramètres série. Remplacez tout `main.cpp` par :
 ```cpp
 #include <pprzlink/BoostSerialPortDevice.h>
 #include <pprzlink/PprzTransport.h>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <exception>
 #include <iostream>
@@ -788,16 +831,21 @@ int main(int argc, char **argv)
         altitude.setFieldSI("altitude", 123.5);
         transport.sendMessage(altitude);
 
-        const auto deadline = std::chrono::steady_clock::now() + 10s;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (auto received = transport.tryReceive()) {
-                std::cout << received->message.toString() << '\n';
-                return 0;
-            }
-            context.restart();
-            context.run_for(10ms);
-        }
-        throw std::runtime_error("Aucun message série reçu en 10 secondes");
+        bool received = false;
+        boost::asio::steady_timer timeout(context, 10s);
+        timeout.async_wait([&](const boost::system::error_code &error) {
+            if (!error) transport.stop();
+        });
+        transport.bind(pprzlink::ALL, [&](const pprzlink::Message &message) {
+            std::cout << message.toString() << '\n';
+            received = true;
+            transport.stop();
+            timeout.cancel();
+        });
+        transport.start();
+        context.run();
+        if (!received) throw std::runtime_error("Aucun message série reçu en 10 secondes");
+        return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
@@ -818,11 +866,11 @@ Il ne reçoit pas automatiquement une copie de son propre envoi.
 le transport le détruira à sa propre destruction. La variable `device` est
 alors vide ; configurez donc le port avant ce transfert.
 
-Contrairement à l'exemple UDP, la réception série utilise des opérations
-asynchrones Boost.Asio. `context.run_for(10ms)` leur permet d'avancer.
-`context.restart()` prépare une nouvelle exécution si la précédente s'est
-arrêtée faute de travail. Appeler seulement `tryReceive()` en boucle ne
-suffit pas à faire fonctionner ces opérations asynchrones.
+Comme UDP, la réception série utilise Boost.Asio. `context.run()` traite les
+lectures et les abonnements ; les callbacks applicatifs sont appelés après la
+libération du mutex d'I/O du périphérique. Une lambda peut envoyer une réponse,
+se désabonner ou arrêter son récepteur. `stop()` conserve les bindings pour un
+éventuel `start()` ultérieur, sans arrêter un contexte partagé avec d'autres canaux.
 
 L'ordre des déclarations est intentionnel : le transport est détruit avant
 le contexte et le dictionnaire qu'il utilise. Nous reviendrons à ces durées
@@ -831,18 +879,15 @@ de vie à l'étape 12.
 ### Réagir au bon message
 
 Un transport peut recevoir plusieurs types de messages. Dans une application
-qui poursuit sa boucle, le traitement d'une réception peut ressembler à ceci :
+qui poursuit sa réception, remplacez l'abonnement `ALL` de l'exemple par :
 
 ```cpp
-if (auto received = transport.tryReceive()) {
-    const auto &message = received->message;
-    if (message.getDefinition().getName() == "GUIDE_SETTING"
-        && message.getReceiverId() == 42) {
+transport.bind("GUIDE_SETTING", {.receiverId = 42},
+    [](const pprzlink::Message &message) {
         const auto aircraft = message.getFieldAs<int>("ac_id");
         const auto value = message.getField<float>("value");
         std::cout << "Réglage pour " << aircraft << " : " << value << '\n';
-    }
-}
+    });
 ```
 
 La bibliothèque ne décide pas à votre place si un message reçu doit être
@@ -1226,10 +1271,9 @@ configuration.localAddress = 0x100;
 configuration.targetBaudrate = std::nullopt;
 transport.startInitialization(configuration);
 
-while (!transport.pollInitialization()) {
-    context.restart();
-    context.run_for(10ms);
-}
+// Remplacez aussi l’envoi direct de l’étape 7 par :
+// transport.onReady([&] { transport.sendMessage(altitude); });
+// Conservez les bind(), start() et context.run() de cette étape.
 ```
 
 Dans cette configuration, le modem doit déjà communiquer à la vitesse
@@ -1238,10 +1282,11 @@ configurée sur le port série, 57600 bauds dans notre programme.
 configure l'adresse locale et le mode API ; le canal reste inchangé lorsque
 `configuration.channel` n'est pas renseigné.
 
-`pollInitialization()` fait avancer le dialogue AT et vérifie les réponses.
-Il faut continuer à faire fonctionner le contexte Asio entre les appels.
-Les délais de réponse et les temps de garde sont gérés par l'initialiseur ;
-une erreur lève une exception. Attendez la fin de cette phase avant d'envoyer
+`start()` active le dialogue AT ; l'arrivée des octets et les échéances Asio
+vérifient les réponses et font avancer l'initialisation. Placez l'envoi dans
+`transport.onReady([&] { transport.sendMessage(altitude); });`, après la création
+du message `altitude`. Les délais et temps de garde ne demandent aucune interrogation
+périodique. Une erreur est signalée par `onError()` ou remontée dans la boucle. Attendez la fin de cette phase avant d'envoyer
 des messages, et laissez le transport seul utiliser le périphérique pendant
 l'initialisation.
 
@@ -1292,7 +1337,7 @@ const auto frameId = transport.getLastFrameId();
 std::cout << "Identifiant radio envoyé : " << static_cast<unsigned>(frameId) << '\n';
 ```
 
-Continuez ensuite à appeler `tryReceive()` et à faire avancer Asio.
+Activez la réception avec `start()` et faites tourner Asio avec `context.run()`.
 Le traitement de la réception déclenche aussi les callbacks de statut, même
 si aucun message applicatif n'est rendu. Un statut de transmission égal à
 zéro indique le succès radio ; il ne confirme pas que l'application distante
@@ -1309,16 +1354,15 @@ relèvent du programme utilisateur.
 Les messages radio reçus portent aussi des métadonnées :
 
 ```cpp
-if (auto received = transport.tryReceive()) {
-    std::cout << received->message.toString() << '\n';
-    if (received->xbee) {
-        const auto &radio = *received->xbee;
-        std::cout << "Adresse radio source : " << radio.sourceAddress << '\n';
-        if (radio.hasRssi) {
-            std::cout << "RSSI : " << -static_cast<int>(radio.rssi) << " dBm\n";
+transport.bind(pprzlink::ALL,
+    [](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
+        std::cout << message.toString() << '\n';
+        if (info.xbee) {
+            const auto &radio = *info.xbee;
+            std::cout << "Adresse radio source : " << radio.sourceAddress << '\n';
+            if (radio.hasRssi) std::cout << "RSSI : " << -static_cast<int>(radio.rssi) << " dBm\n";
         }
-    }
-}
+    });
 ```
 
 L'adresse radio source et l'identifiant d'expéditeur PPRZLINK décrivent deux
@@ -1380,45 +1424,72 @@ simulation. Deux approches sont possibles :
 
 La première approche laisse toute la gestion des I/O à votre programme.
 La seconde permet de réutiliser le transport existant. Voici un périphérique
-de bouclage en mémoire pour comprendre le contrat, sans réseau ni threads.
-Ajoutez `<pprzlink/PprzTransport.h>`, `<memory>` et `<utility>`, puis placez
+de bouclage en mémoire pour comprendre le contrat, sans réseau ni thread
+supplémentaire. Cet adaptateur de démonstration s’utilise sur un seul thread.
+Ajoutez `<pprzlink/PprzTransport.h>`, `<boost/asio/io_context.hpp>`,
+`<boost/asio/post.hpp>`, `<memory>` et `<utility>`, puis placez
 cette classe **avant `main()`** :
 
 ```cpp
 class LoopbackDevice final : public pprzlink::Device {
 public:
-    std::size_t availableBytes() override { return pending.size(); }
-
+    explicit LoopbackDevice(boost::asio::io_context &context) : context(context) {}
+    ~LoopbackDevice() override { state->receiving = false; state->callback = {}; }
+    std::size_t availableBytes() override { return state->pending.size(); }
     pprzlink::BytesBuffer readAll() override
-    {
-        return std::exchange(pending, pprzlink::BytesBuffer{});
-    }
-
+    { return std::exchange(state->pending, pprzlink::BytesBuffer{}); }
+    void setReceiveCallback(ReceiveCallback callback) override
+    { state->callback = std::move(callback); }
+    void startReception() override { state->receiving = true; notify(); }
+    void stopReception() override { state->receiving = false; }
+    boost::asio::any_io_executor getExecutor() override { return context.get_executor(); }
     void writeBuffer(const pprzlink::BytesBuffer &bytes) override
-    {
-        pending.insert(pending.end(), bytes.begin(), bytes.end());
-    }
-
+    { state->pending.insert(state->pending.end(), bytes.begin(), bytes.end()); notify(); }
 private:
-    pprzlink::BytesBuffer pending;
+    struct State {
+        pprzlink::BytesBuffer pending;
+        ReceiveCallback callback;
+        bool receiving = false;
+    };
+    boost::asio::io_context &context;
+    std::shared_ptr<State> state = std::make_shared<State>();
+    void notify()
+    {
+        if (state->receiving && !state->pending.empty()) {
+            boost::asio::post(context, [state = state] {
+                if (state->receiving && state->callback && !state->pending.empty()) {
+                    auto callback = state->callback;
+                    callback();
+                }
+            });
+        }
+    }
 };
 ```
 
 Dans le bloc `try`, après le remplissage de `altitude`, ajoutez :
 
 ```cpp
-pprzlink::PprzTransport loopback(std::make_unique<LoopbackDevice>(), dictionary);
+boost::asio::io_context context;
+pprzlink::PprzTransport loopback(std::make_unique<LoopbackDevice>(context), dictionary);
+loopback.bind(pprzlink::ALL, [&](const pprzlink::Message &message) {
+    std::cout << "Bouclage : " << message.toString() << '\n';
+    loopback.stop();
+});
+loopback.start();
 loopback.sendMessage(altitude);
-if (auto received = loopback.tryReceive()) {
-    std::cout << "Bouclage : " << received->message.toString() << '\n';
-}
+context.run();
 ```
 
 Vous retrouvez votre propre message parce que ce périphérique renvoie en
 lecture tout ce qui lui est écrit. Il suffit de `pprzlink::core` pour cet
 exemple : aucune dépendance à un port série n'est nécessaire.
 
-Dans un adaptateur réel, `readAll()` consomme les octets actuellement
+Dans un adaptateur réel, `getExecutor()` donne le contexte de notification ;
+`startReception()` arme les lectures, `stopReception()` les annule, et
+`setReceiveCallback()` installe un observateur appelé hors des verrous d’I/O.
+Les buffers doivent survivre jusqu’à la fin des lectures annulées.
+`readAll()` consomme les octets actuellement
 disponibles et peut retourner un tableau vide. `writeBuffer()` doit écrire
 le tampon entier ou lever une exception ; une écriture partielle silencieuse
 ne respecte pas son contrat. Si le système sous-jacent autorise des écritures
@@ -1431,10 +1502,8 @@ spécifique `SerialDevice` et sa méthode `resetBaudrate()`.
 
 `PprzTransport` et `XbeeTransport` dérivent tous deux de `Transport` : un
 programme peut choisir l'un ou l'autre avec un `std::unique_ptr<Transport>`.
-`UdpTransport` et `IvyLink` ont leurs propres interfaces ; ils ne dérivent
-pas de cette classe. Si votre application doit changer entre ces quatre
-modes, construisez une petite abstraction autour des opérations dont elle
-a réellement besoin.
+`UdpTransport` et `IvyLink` ont leurs propres opérations d’envoi, mais les
+quatre modes partagent `Receiver`, `bind()`, `start()` et `stop()`.
 
 ## 12. Organiser une application durable et diagnostiquer les erreurs
 
@@ -1505,7 +1574,7 @@ nécessitent une reconnexion ou un arrêt.
 | `field_conversion_error` | La valeur tient-elle dans le type XML après conversion et, pour un setter SI entier, arrondi ? Le setter natif refuse les fractions. |
 | `field_unit_error` | `canConvertSI()` est-il vrai ? Vérifier les unités/coefficient XML et la correspondance dans `UnitAliases.cpp`. |
 | `std::length_error` | Taille de tableau fixe incorrecte, tableau trop long ou message trop grand ? |
-| `tryReceive()` reste vide en série | Le contexte Asio tourne-t-il ? Le correspondant émet-il, avec le bon débit et le bon protocole ? |
+| Aucun callback de réception série | Le contexte Asio tourne-t-il ? Le correspondant émet-il, avec le bon débit et le bon protocole ? |
 | Rien ne déclenche le callback Ivy | Même domaine Ivy, abonnement encore vivant, boucle active et publication après découverte ? |
 | Requête Ivy sans réponse | Le répondeur est-il abonné à la définition `_REQ` et retourne-t-il le bon type de réponse ? |
 | XBee écrit des octets mais rien n'arrive | Destination radio correcte, modem en AP=1, statuts TX traités ? |

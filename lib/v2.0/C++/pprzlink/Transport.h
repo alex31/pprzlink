@@ -33,6 +33,7 @@
 #include "MessageDictionary.h"
 #include "TransportStatistics.h"
 #include "ReceivedMessage.h"
+#include "Receiver.h"
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -41,20 +42,27 @@ namespace pprzlink {
   /// Owns its device exclusively; the borrowed dictionary must outlive the transport.
   /// Calls on the same transport must be serialized by the application.
   /// @ingroup transports
-  class Transport {
+  class Transport : public Receiver {
   public:
     /// @brief Take exclusive ownership of a byte stream and borrow its schemas.
     /// @param[in] device Non-null device whose ownership moves into this transport.
     /// @param[in] dictionary Schemas that must outlive this transport.
+    /// @param[in] kind Source metadata family used to validate receive filters.
     /// @throws std::invalid_argument The device pointer is null.
-    explicit Transport(std::unique_ptr<Device> device, const MessageDictionary &dictionary)
-      : device(std::move(device)), dictionary(dictionary)
+    explicit Transport(std::unique_ptr<Device> device, const MessageDictionary &dictionary,
+                       Kind kind = Kind::Stream)
+      : Receiver(dictionary, kind), device(std::move(device)), dictionary(dictionary)
     {
       if (!this->device) throw std::invalid_argument("Transport requires a device");
     }
 
     /// @brief Destroy the owned device and release transport state.
-    virtual ~Transport() = default;
+    ~Transport() override
+    {
+      shutdown();
+      device->setReceiveCallback({});
+      try { device->stopReception(); } catch (...) {}
+    }
     /// @brief Copying an exclusively owned transport is prohibited.
     Transport(const Transport&) = delete;
     /// @brief Copy assignment is prohibited.
@@ -66,26 +74,26 @@ namespace pprzlink {
     /// @return This operation is deleted and cannot return.
     Transport& operator=(Transport&&) = delete;
 
-    /// @brief Poll input and inspect/cache a complete message without consuming it.
-    /// @return True when getMessage() can return a complete message.
-    /// @throws std::exception An I/O or payload decoding failure.
-    virtual bool hasMessage() = 0;
-
-    /// @brief Poll and consume the next complete message.
-    /// @return An exclusively owned message, or null when input is incomplete.
-    /// @throws std::exception An I/O or payload decoding failure.
-    virtual std::unique_ptr<Message> getMessage() = 0;
-
-    /// Poll I/O and return a complete message with its metadata, or nullopt.
-    /// As with getMessage(), malformed payloads and I/O failures throw.
-    /// Calls on one transport remain serialized by the application.
-    /// @return An owned message result or std::nullopt; the default implementation supplies no peer metadata.
-    /// @throws std::exception An I/O or payload decoding failure.
-    [[nodiscard]] virtual std::optional<ReceivedMessage> tryReceive()
+    /// @brief Subscribe to device readiness and start asynchronous input.
+    /// @throws std::exception Device startup or an unhandled terminal error fails.
+    void start() override
     {
-      auto message = getMessage();
-      if (!message) return std::nullopt;
-      return ReceivedMessage{std::move(*message), lastReceivedFrameSize, std::nullopt, std::nullopt};
+      auto lock = lockReceiver();
+      if (!activate()) return;
+      device->setReceiveCallback(guarded([this] {
+        try { receiveAvailable(); }
+        catch (...) { stop(); throw; }
+      }));
+      try { device->startReception(); receptionStarted(); }
+      catch (...) { stop(); throw; }
+    }
+    /// @brief Stop device reception without stopping the shared event loop.
+    void stop() override
+    {
+      auto lock = lockReceiver();
+      deactivate();
+      device->setReceiveCallback({});
+      device->stopReception();
     }
 
     /// Write a complete message and return the number of bytes sent, or throw.
@@ -109,6 +117,17 @@ namespace pprzlink {
     [[nodiscard]] const Device& getDevice() const noexcept { return *device; }
 
   protected:
+    /// @brief Consume available device input, reporting channel failures through onError().
+    /// @return Bytes received; empty after a terminal failure has stopped reception.
+    BytesBuffer receiveBytes()
+    {
+      try { return device->readAll(); }
+      catch (...) { auto error = std::current_exception(); stop(); reportError(error, ReceiveError::Kind::Io); return {}; }
+    }
+    /// @brief Decode and distribute input following a device readiness notification.
+    virtual void receiveAvailable() = 0;
+    /// @brief Hook for protocol deadline setup after asynchronous reads have started.
+    virtual void receptionStarted() {}
     std::unique_ptr<Device> device; ///< Exclusively owned byte stream.
     const MessageDictionary &dictionary; ///< Borrowed XML schemas.
     TransportStatistics statistics; ///< Receive counters maintained by the concrete transport.

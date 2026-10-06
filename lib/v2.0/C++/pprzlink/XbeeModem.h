@@ -68,6 +68,9 @@ namespace pprzlink {
     /// @brief Inspect whether the final command-mode exit succeeded.
     /// @return True only in the successful terminal state.
     bool isReady() const noexcept { return stage == Stage::Ready; }
+    /// @brief Next guard or response deadline; input arrival can advance the dialogue sooner.
+    /// @return Absolute monotonic deadline, or nullopt in a terminal state.
+    std::optional<TimePoint> nextDeadline() const noexcept;
     /// Available after successful initialization with baud detection enabled.
     /// @return Owned detected/configured/saved values, otherwise std::nullopt.
     std::optional<XbeeBaudrateInfo> getBaudrateInfo() const noexcept;

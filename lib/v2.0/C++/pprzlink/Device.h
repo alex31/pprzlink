@@ -31,6 +31,8 @@
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <boost/asio/any_io_executor.hpp>
+#include <functional>
 
 namespace pprzlink {
 
@@ -42,8 +44,19 @@ namespace pprzlink {
   /// @ingroup transports
   class Device {
   public:
+    using ReceiveCallback = std::function<void()>; ///< Input/error notification executed outside device I/O locks.
     /// @brief Release the device and any implementation-owned I/O resources.
     virtual ~Device() = default;
+    /// @brief Set the observer notified when input or a terminal read error is available.
+    /// @param[in] callback Observer retained until replacement; an empty callback disables notifications.
+    virtual void setReceiveCallback(ReceiveCallback callback) = 0;
+    /// @brief Start asynchronous reads on the device's executor, without an owned thread.
+    virtual void startReception() = 0;
+    /// @brief Cancel pending reads while keeping the device open.
+    virtual void stopReception() = 0;
+    /// @brief Return the executor used for read notifications and protocol deadlines.
+    /// @return Borrowed-context executor; its execution context must outlive the device.
+    virtual boost::asio::any_io_executor getExecutor() = 0;
     /// @brief Inspect already buffered input without consuming it.
     /// @return Number of bytes available to read without waiting for new input.
     /// @throws std::exception An implementation-specific I/O failure.

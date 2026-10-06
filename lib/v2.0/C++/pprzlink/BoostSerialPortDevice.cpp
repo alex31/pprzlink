@@ -27,6 +27,7 @@
 
 #include "BoostSerialPortDevice.h"
 #include <boost/asio/write.hpp>
+#include <boost/asio/post.hpp>
 #include <array>
 #include <mutex>
 #include <stdexcept>
@@ -48,6 +49,7 @@ namespace pprzlink {
     boost::asio::serial_port port; ///< Owned port borrowing the caller's context.
     std::array<uint8_t, 1024> readBuffer; ///< Storage retained until a pending read completes.
     BytesBuffer received; ///< Completed input not yet drained by readAll().
+    ReceiveCallback callback; ///< Readiness observer invoked outside mutex.
     boost::system::error_code receiveError; ///< Deferred terminal receive failure.
     bool receiving = false; ///< Whether a completion should schedule another read.
     bool readPending = false; ///< Prevents overlapping reads using the same buffer.
@@ -78,16 +80,25 @@ namespace pprzlink {
     /// @param[in] generation Input epoch captured when the operation was started.
     void finishRead(const boost::system::error_code &error, size_t size, uint64_t generation)
     {
-      std::lock_guard lock(mutex);
-      readPending = false;
-      if (generation == inputGeneration) {
-        received.insert(received.end(), readBuffer.begin(), readBuffer.begin() + size);
-        if (error && error != boost::asio::error::operation_aborted) {
-          receiveError = error;
-          receiving = false;
+      ReceiveCallback observer;
+      {
+        std::lock_guard lock(mutex);
+        readPending = false;
+        if (generation == inputGeneration) {
+          received.insert(received.end(), readBuffer.begin(), readBuffer.begin() + size);
+          if (error && error != boost::asio::error::operation_aborted) {
+            receiveError = error;
+            receiving = false;
+          }
+          if (receiving || receiveError) observer = callback;
         }
+        startRead(); // Includes a restart requested while cancellation was pending.
       }
-      startRead(); // Includes a restart requested while cancellation was pending.
+      if (observer) {
+        observer();
+        // Surface a terminal error after delivering bytes completed in that same read.
+        if (size && error && error != boost::asio::error::operation_aborted) observer();
+      }
     }
 
     /// @brief Read one native serial option while holding the state lock.
@@ -168,6 +179,13 @@ namespace pprzlink {
     state->checkReceiveError();
     state->receiving = true;
     state->startRead();
+    if (!state->received.empty() && state->callback) {
+      boost::asio::post(state->port.get_executor(), [state = state] {
+        ReceiveCallback observer;
+        { std::lock_guard lock(state->mutex); if (state->receiving) observer = state->callback; }
+        if (observer) observer();
+      });
+    }
   }
 
   void BoostSerialPortDevice::stopReception()
@@ -175,6 +193,17 @@ namespace pprzlink {
     std::lock_guard lock(state->mutex);
     state->receiving = false;
     state->port.cancel();
+  }
+
+  void BoostSerialPortDevice::setReceiveCallback(ReceiveCallback callback)
+  {
+    std::lock_guard lock(state->mutex);
+    state->callback = std::move(callback);
+  }
+
+  boost::asio::any_io_executor BoostSerialPortDevice::getExecutor()
+  {
+    return state->port.get_executor();
   }
 
   BoostSerialPortDevice::Baudrate BoostSerialPortDevice::getBaudrate() const

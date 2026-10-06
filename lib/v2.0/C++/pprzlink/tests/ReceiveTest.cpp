@@ -27,22 +27,22 @@ int main()
     auto device = std::make_unique<MemoryDevice>();
     auto &wire = *device;
     XbeeTransport radio(std::move(device), dictionary);
-    Transport &polymorphic = radio;
-    require(!polymorphic.tryReceive(), "No message yet is not an error");
+    ReceiptQueue inbox(radio);
+    require(!inbox.receive(), "No message yet is not an error");
     wire.incoming = radioFrame(0x1234, 60, 7);
     const auto secondFrame = radioFrame(0x5678, 80, 8);
     wire.incoming.insert(wire.incoming.end(), secondFrame.begin(), secondFrame.end());
-    const auto first = polymorphic.tryReceive();
-    const auto second = polymorphic.tryReceive();
+    const auto first = inbox.receive();
+    const auto second = inbox.receive();
     require(first && second && first->message.getField<uint8_t>("value") == 7 &&
             second->message.getField<uint8_t>("value") == 8, "Both concatenated messages received");
     require(first->xbee && first->xbee->sourceAddress == 0x1234 && first->xbee->rssi == 60 &&
             second->xbee && second->xbee->sourceAddress == 0x5678 && second->xbee->rssi == 80,
             "Metadata remains associated with each retained message");
     require(first->frameSize == 14 && second->frameSize == 14 && !first->udpPeer, "Complete frame size and transport kind");
-    require(!polymorphic.tryReceive(), "Queue drained");
+    require(!inbox.receive(), "Queue drained");
     wire.incoming = radioFrame(0x9876, 50, 9);
-    require(radio.getMessage()->getField<uint8_t>("value") == 9, "Legacy receive remains supported");
+    require(inbox.getMessage()->getField<uint8_t>("value") == 9, "A subsequent source notification delivers the next message");
     require(first->xbee->sourceAddress == 0x1234, "Legacy receive does not overwrite retained metadata");
 
     Message value(dictionary.getDefinition("VALUE"));
@@ -50,7 +50,8 @@ int main()
     auto serialDevice = std::make_unique<MemoryDevice>();
     serialDevice->incoming = encodePprzFrame(value);
     PprzTransport serial(std::move(serialDevice), dictionary);
-    const auto received = serial.tryReceive();
+    ReceiptQueue serialInbox(serial);
+    const auto received = serialInbox.receive();
     require(received && received->frameSize == 9 && !received->xbee && !received->udpPeer,
             "Same receipt API for ordinary serial frames");
     PprzFrameDecoder decoder(dictionary);

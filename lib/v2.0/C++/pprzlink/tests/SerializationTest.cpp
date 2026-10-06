@@ -1,3 +1,4 @@
+#include "TestSupport.h"
 #include <pprzlink/BinaryCodec.h>
 #include <pprzlink/TextCodec.h>
 #include <pprzlink/Message.h>
@@ -17,14 +18,6 @@ namespace {
     char do_decimal_point() const override { return ','; }
     char do_thousands_sep() const override { return '_'; }
     std::string do_grouping() const override { return "\3"; }
-  };
-
-  class MemoryDevice : public Device {
-  public:
-    BytesBuffer incoming, outgoing;
-    size_t availableBytes() override { return incoming.size(); }
-    BytesBuffer readAll() override { return std::exchange(incoming, {}); }
-    void writeBuffer(const BytesBuffer &bytes) override { outgoing = bytes; }
   };
 
   void require(bool condition, const char *description)
@@ -226,6 +219,7 @@ namespace {
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     PprzTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     source.setSenderId(uint8_t{42});
     source.setReceiverId(7);
     source.setComponentId(3);
@@ -235,17 +229,17 @@ namespace {
             "PprzLink v2 header");
     require(BytesBuffer(packet.begin() + 6, packet.end() - 2) == bytes, "Transport payload");
     device.incoming.assign(packet.begin(), packet.begin() + 4);
-    require(!transport.hasMessage(), "Wait for the rest of a packet");
+    require(!inbox.hasMessage(), "Wait for the rest of a packet");
     device.incoming.assign(packet.begin() + 4, packet.end());
     device.incoming.insert(device.incoming.end(), packet.begin(), packet.end());
     for (int i = 0; i < 2; ++i) {
-      require(transport.hasMessage(), "Complete packet available");
-      const auto received = transport.getMessage();
+      require(inbox.hasMessage(), "Complete packet available");
+      const auto received = inbox.getMessage();
       require(received && received->toString() == source.toString(), "Transport round trip");
       require(std::get<uint8_t>(received->getSenderId()) == 42 && received->getReceiverId() == 7 &&
               received->getComponentId() == 3, "Transport addressing");
     }
-    require(!transport.hasMessage(), "Both packets consumed");
+    require(!inbox.hasMessage(), "Both packets consumed");
   }
 }
 

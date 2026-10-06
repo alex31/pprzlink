@@ -96,6 +96,7 @@ namespace {
     auto device = std::make_unique<MemoryDevice>();
     auto &wire = *device;
     XbeeTransport radio(std::move(device), dictionary, XbeeTransport::Api::Series868);
+    ReceiptQueue inbox(radio);
     radio.setSanityChecksEnabled(true);
     Message message(dictionary.getDefinition("EMPTY"));
     message.setReceiverId(42);
@@ -104,7 +105,7 @@ namespace {
     const auto expected = xbeeFrame({0x10, 7, 0, 0, 0, 0, 0, 0, 0, 42, 0xff, 0xfe, 0, 0, 0, 42, 1, 44});
     require(wire.outgoing == expected, "868 TX fixture and caller-owned ID");
     wire.incoming = xbeeFrame({0x90, 0, 0, 0, 0, 0, 0, 0, 42, 0xff, 0xfe, 1, 42, 0, 1, 44});
-    require(radio.getMessage() != nullptr, "868 RX fixture");
+    require(inbox.getMessage() != nullptr, "868 RX fixture");
     require(radio.getLastReceiveInfo()->sourceAddress == 42 && !radio.getLastReceiveInfo()->hasRssi, "868 metadata");
     require(radio.getLastReceivedFrameSize() == 20 && radio.getStatistics().receivedMessages == 1, "868 RX bytes");
     std::optional<XbeeTransport::TransmitStatus> received;
@@ -112,7 +113,7 @@ namespace {
       if (const auto status = std::get_if<XbeeTransport::TransmitStatus>(&event)) received = *status;
     });
     wire.incoming = xbeeFrame({0x8b, 7, 0xff, 0xfe, 3, 1, 0});
-    require(!radio.hasMessage(), "TX status is not telemetry");
+    require(!inbox.hasMessage(), "TX status is not telemetry");
     require(received && received->frameId == 7 && received->status == 1 && received->retries == 3, "868 TX status");
   }
 }

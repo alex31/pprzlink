@@ -23,7 +23,9 @@
  * Declare MessageDictionary before any object borrowing it. Transports own
  * their Device exclusively. BoostSerialPortDevice and UdpTransport borrow
  * an Asio context that must outlive them. Service the context to progress
- * asynchronous serial reads; calls to one transport must be serialized.
+ * asynchronous serial/UDP reads. Receiver::bind() owns subscriptions; start()
+ * enables them and stop() cancels only that receiver. Message callbacks are
+ * serialized per receiver and invoked outside device I/O locks.
  * Ivy callbacks run on the bus loop and need synchronization when sharing
  * application data with another thread. Keep subscription tokens alive and
  * finish external calls before destroying the objects they use.

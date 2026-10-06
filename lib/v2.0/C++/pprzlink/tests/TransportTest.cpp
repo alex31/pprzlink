@@ -25,11 +25,11 @@ namespace {
     buffer.insert(buffer.end(), frame.begin(), frame.end());
   }
 
-  void requireByte(PprzTransport &transport)
+  void requireByte(ReceiptQueue &inbox)
   {
-    const auto message = transport.getMessage();
+    const auto message = inbox.getMessage();
     require(message && message->getField<uint8_t>("value") == 123, "Recovered byte frame");
-    require(!transport.hasMessage(), "Exactly one complete frame");
+    require(!inbox.hasMessage(), "Exactly one complete frame");
   }
 
   template<class TransportType>
@@ -57,7 +57,8 @@ namespace {
       require(&transport->getDevice() == &borrowed &&
               &std::as_const(*transport).getDevice() == &borrowed, "Device references stay valid");
       borrowed.incoming = {0x55}; // The transport can still use the transferred device.
-      require(!transport->hasMessage() && borrowed.incoming.empty(), "Owned device remains usable");
+      transport->start();
+      require(borrowed.incoming.empty(), "Owned device remains usable");
     }
     require(destructions == 1, "Polymorphic transport destruction releases the device exactly once");
 
@@ -80,28 +81,31 @@ namespace {
       auto deviceOwner = std::make_unique<MemoryDevice>();
       auto &device = *deviceOwner;
       PprzTransport transport(std::move(deviceOwner), dictionary);
+      ReceiptQueue inbox(transport);
       device.incoming.assign(byteFrame.begin(), byteFrame.begin() + split);
-      require(transport.hasMessage() == (split == byteFrame.size()), "Fragmented frame completeness");
+      require(inbox.hasMessage() == (split == byteFrame.size()), "Fragmented frame completeness");
       device.incoming.assign(byteFrame.begin() + split, byteFrame.end());
-      requireByte(transport);
+      requireByte(inbox);
     }
     for (uint8_t length = 0; length < 8; ++length) {
       auto deviceOwner = std::make_unique<MemoryDevice>();
       auto &device = *deviceOwner;
       PprzTransport transport(std::move(deviceOwner), dictionary);
+      ReceiptQueue inbox(transport);
       device.incoming = {0x99, length};
       append(device.incoming, byteFrame);
-      requireByte(transport);
+      requireByte(inbox);
     }
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     PprzTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     for (int i = 0; i < 20000; ++i) append(device.incoming, {0x55, 0x99, 0});
     auto corrupt = byteFrame;
     corrupt.back() ^= 1;
     append(device.incoming, corrupt);
     append(device.incoming, byteFrame);
-    requireByte(transport); // No recursion proportional to noise/corrupt frames.
+    requireByte(inbox); // No recursion proportional to noise/corrupt frames.
 
     // A checksum-valid header promises a uint32, but only supplies one payload byte.
     auto shortPayload = byteFrame;
@@ -109,24 +113,24 @@ namespace {
     updateChecksum(shortPayload);
     device.incoming = shortPayload;
     append(device.incoming, byteFrame);
-    expectException<std::out_of_range>([&] { (void)transport.getMessage(); });
-    requireByte(transport); // Neither checksum nor following frame became field data.
+    expectException<std::out_of_range>([&] { (void)inbox.getMessage(); });
+    requireByte(inbox); // Neither checksum nor following frame became field data.
 
     auto extraPayload = byteFrame;
     extraPayload.insert(extraPayload.end() - 2, 77);
     updateChecksum(extraPayload);
     device.incoming = extraPayload;
     append(device.incoming, byteFrame);
-    expectException<wrong_message_format>([&] { (void)transport.hasMessage(); });
-    requireByte(transport);
+    expectException<wrong_message_format>([&] { (void)inbox.hasMessage(); });
+    requireByte(inbox);
 
     auto unknown = byteFrame;
     unknown[5] = 200;
     updateChecksum(unknown);
     device.incoming = unknown;
     append(device.incoming, byteFrame);
-    expectException<no_such_message>([&] { (void)transport.getMessage(); });
-    requireByte(transport);
+    expectException<no_such_message>([&] { (void)inbox.getMessage(); });
+    requireByte(inbox);
   }
 
   void testSending(const MessageDictionary &dictionary)
@@ -134,6 +138,7 @@ namespace {
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     PprzTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     Message message(dictionary.getDefinition("BYTE"));
     message.addField("value", 123);
     message.setSenderId(std::string("42"));
@@ -154,7 +159,7 @@ namespace {
     large.addField("data", std::vector<uint8_t>(246, 0xaa));
     require(transport.sendMessage(large) == 255 && device.outgoing[1] == 255, "Maximum frame size");
     device.incoming = device.outgoing;
-    require(transport.getMessage()->getField<std::vector<uint8_t>>("data").size() == 246,
+    require(inbox.getMessage()->getField<std::vector<uint8_t>>("data").size() == 246,
             "Maximum frame round trip");
     large.addField("data", std::vector<uint8_t>(247, 0xaa));
     expectException<std::length_error>([&] { transport.sendMessage(large); });

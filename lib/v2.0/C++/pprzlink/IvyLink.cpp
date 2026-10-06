@@ -55,7 +55,7 @@ namespace pprzlink {
 
   IvyLink::IvyLink(const MessageDictionary &dict, std::string appName,
                    std::string domain, bool threadedIvy)
-    : dictionary(dict), bus(checked(ivy::Bus::create(appName, appName + " ready")))
+    : Receiver(dict, Kind::Ivy), dictionary(dict), bus(checked(ivy::Bus::create(appName, appName + " ready")))
   {
     checked(bus.start(domain));
     if (threadedIvy) {
@@ -65,6 +65,7 @@ namespace pprzlink {
 
   IvyLink::~IvyLink()
   {
+    shutdown();
     loop.reset(); // Stop and join before releasing any callback captures.
     (void)bus.stop();
   }
@@ -74,13 +75,37 @@ namespace pprzlink {
     if (loop) {
       throw std::logic_error("This IvyLink already owns an event-loop thread");
     }
+    start();
     checked(bus.run());
     checked(bus.take_callback_error());
   }
 
   void IvyLink::stop()
   {
+    auto lock = lockReceiver();
+    deactivate();
+    reactiveSubscription.reset();
     checked(bus.request_stop());
+  }
+
+  void IvyLink::start()
+  {
+    auto lock = lockReceiver();
+    if (!activate()) return;
+    auto notification = guarded([this](std::string_view sender, std::string_view body) {
+      std::optional<Message> message;
+      try {
+        const auto &definition = dictionary.getDefinition(std::string(body.substr(0, body.find(' '))));
+        message = ivy_codec::parseMessageBody(definition, sender, body);
+      } catch (...) { reportError(std::current_exception(), ReceiveError::Kind::Decode); return; }
+      try { deliver(*message, ReceiveInfo{}); } catch (...) { stop(); throw; }
+    });
+    try {
+      reactiveSubscription.emplace(checked(bus.bind_raw(
+        [notification](IvyClientPtr, std::span<const std::string_view> arguments) mutable {
+          if (arguments.size() == 2) notification(arguments[0], arguments[1]);
+        }, ivy::runtime_regexp("^([^ ]*) (.*)$"))));
+    } catch (...) { deactivate(); throw; }
   }
 
   long IvyLink::storeSubscription(ivy::Subscription subscription)

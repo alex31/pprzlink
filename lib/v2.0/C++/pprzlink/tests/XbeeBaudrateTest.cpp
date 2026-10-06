@@ -1,4 +1,5 @@
 #include "TestSupport.h"
+#include <boost/asio/post.hpp>
 #include <pprzlink/XbeeTransport.h>
 #include <algorithm>
 #include <array>
@@ -36,12 +37,26 @@ namespace {
       resets.push_back(rate);
       incoming.clear();
     }
+    boost::asio::io_context context;
+    ReceiveCallback callback;
+    bool receiving = false;
+    void setReceiveCallback(ReceiveCallback value) override { callback = std::move(value); }
+    void startReception() override { receiving = true; notifyInput(); }
+    void stopReception() override { receiving = false; }
+    boost::asio::any_io_executor getExecutor() override { return context.get_executor(); }
+    void notifyInput()
+    {
+      if (receiving && callback && !incoming.empty()) boost::asio::post(context, [this] {
+        if (receiving && callback && !incoming.empty()) { auto observer = callback; observer(); }
+      });
+    }
     size_t availableBytes() override { return incoming.size(); }
     BytesBuffer readAll() override
     {
       if (!fragmentReplies || incoming.empty()) return std::exchange(incoming, {});
       BytesBuffer result{incoming.front()};
       incoming.erase(incoming.begin());
+      notifyInput();
       return result;
     }
     void writeBuffer(const BytesBuffer &bytes) override
@@ -52,6 +67,7 @@ namespace {
       const auto occurrence = ++occurrences[command];
       if (fault && command == fault->command && occurrence == fault->occurrence) {
         incoming.assign(fault->reply.begin(), fault->reply.end());
+        notifyInput();
         return;
       }
       std::string response = "OK\r";
@@ -85,6 +101,7 @@ namespace {
         }
       }
       incoming.assign(response.begin(), response.end());
+      notifyInput();
     }
 
     unsigned int hostBaud = 0, liveBaud, storedBaud, bd, flashWrites = 0;
@@ -242,15 +259,10 @@ namespace {
     auto &radio = *device;
     radio.fault = Fault{"ATWR\r", 1, "ERROR\r"};
     XbeeTransport transport(std::move(device), dictionary);
-    transport.startInitialization(quickConfiguration(), {});
-    expectException<std::runtime_error>([&] {
-      for (auto now = XbeeModem::TimePoint{}; now < XbeeModem::TimePoint{} + 1s; now += 1ms) {
-        const auto count = radio.writes.size();
-        expectException<std::logic_error>([&] { transport.sendMessage(message); });
-        require(count == radio.writes.size(), "Binary sends are blocked throughout baud negotiation");
-        transport.pollInitialization(now);
-      }
-    });
+    transport.startInitialization(quickConfiguration());
+    expectException<std::logic_error>([&] { transport.sendMessage(message); });
+    transport.start();
+    expectException<std::runtime_error>([&] { radio.context.run_for(1s); });
     expectException<std::logic_error>([&] { transport.sendMessageTo16(message, 42); });
     require(!transport.isReady() && !transport.getBaudrateInfo() && radio.writes.back().second == "ATWR\r",
             "A failed flash write keeps binary sends blocked");

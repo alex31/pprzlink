@@ -1,5 +1,6 @@
 #include "TestSupport.h"
 #include <pprzlink/XbeeTransport.h>
+#include <boost/asio/post.hpp>
 #include <chrono>
 #include <iostream>
 #include <memory>
@@ -11,7 +12,7 @@ using namespace std::chrono_literals;
 namespace {
   struct ModemDevice : MemoryDevice {
     std::vector<std::string> writes;
-    bool failRead = false, failWrite = false;
+    bool failRead = false, failWrite = false, autoReplies = false;
     BytesBuffer readAll() override
     {
       if (failRead) throw std::runtime_error("read failed");
@@ -22,6 +23,11 @@ namespace {
       if (failWrite) throw std::runtime_error("write failed");
       writes.emplace_back(bytes.begin(), bytes.end());
       MemoryDevice::writeBuffer(bytes);
+      if (autoReplies) {
+        reply("OK\r");
+        if (writes.back() == "ATCN\r") incoming.insert(incoming.end(), {0x7e, 0, 9, 0x81, 0, 42, 50, 0, 42, 0, 1, 1, 0xf6});
+        boost::asio::post(context, [this] { notify(); });
+      }
     }
     void reply(std::string_view text) { incoming.assign(text.begin(), text.end()); }
   };
@@ -139,30 +145,28 @@ namespace {
     auto deviceOwner = std::make_unique<ModemDevice>();
     auto &device = *deviceOwner;
     XbeeTransport transport(std::move(deviceOwner), dictionary);
-    const auto start = XbeeModem::Clock::now();
-    transport.startInitialization(quickConfiguration(), start);
+    device.autoReplies = true;
+    transport.startInitialization(quickConfiguration());
     require(!transport.isReady(), "Starting initialization blocks transport");
     expectException<std::logic_error>([&] { transport.sendMessage(message); });
     require(device.writes.empty(), "Blocked send writes no serial bytes");
-    transport.pollInitialization(start + 10ms);
-    device.reply("OK\r");
-    transport.pollInitialization(start + 20ms);
-    for (int i = 0; i < 2; ++i) {
-      device.reply("OK\r");
-      require(!transport.pollInitialization(start + 21ms + i * 1ms), "Not ready before exit acknowledgement");
-      expectException<std::logic_error>([&] { transport.sendMessageTo64(message, 42); });
-    }
-    device.reply("OK\r\n");
-    device.incoming.insert(device.incoming.end(), {0x7e, 0, 9, 0x81, 0, 42, 50, 0, 42, 0, 1, 1, 0xf6});
-    require(transport.pollInitialization(start + 24ms) && transport.isReady(), "Transport initialized");
-    const auto received = transport.getMessage();
-    require(received && received->getDefinition().getName() == "EMPTY", "API frame after ATCN survives initialization");
+    int received = 0, ready = 0;
+    transport.bind("EMPTY", [&](const Message &) { ++received; });
+    transport.onReady([&] { ++ready; });
+    transport.start();
+    device.context.run_for(100ms);
+    require(transport.isReady() && ready == 1 && received == 1,
+            "Input notifications and guard deadlines initialize the modem and preserve post-ATCN frames");
     transport.sendMessage(message);
     require(device.outgoing.front() == 0x7e, "Binary send allowed after initialization");
-
-    transport.startInitialization(quickConfiguration(), start);
-    transport.pollInitialization(start + 10ms);
-    expectException<std::runtime_error>([&] { transport.pollInitialization(start + 40ms); });
+    device.autoReplies = false;
+    std::vector<ReceiveError::Kind> failures;
+    transport.onError([&](const ReceiveError &error) { failures.push_back(error.kind); });
+    transport.startInitialization(quickConfiguration());
+    device.context.restart();
+    device.context.run_for(100ms);
+    require(failures == std::vector<ReceiveError::Kind>{ReceiveError::Kind::Initialization} && !transport.isRunning(),
+            "A reply deadline reports initialization failure and stops reception without polling");
     const auto count = device.writes.size();
     expectException<std::logic_error>([&] { transport.sendMessageTo16(message, 42); });
     require(device.writes.size() == count, "Failed initialization never enables binary sends");

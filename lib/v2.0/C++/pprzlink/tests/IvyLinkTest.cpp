@@ -55,6 +55,32 @@ namespace {
     require(result.has_value(), "Raw Ivy send");
   }
 
+  void testReactive(const MessageDictionary &dict, const std::string &domain)
+  {
+    std::atomic<int> all{0}, numeric{0}, literal{0};
+    IvyLink receiver(dict, "reactive-rx", domain, true);
+    IvyLink sender(dict, "reactive-tx", domain, true);
+    receiver.bind(pprzlink::ALL, [&](const Message &, const pprzlink::ReceiveInfo &info) {
+      require(info.frameSize == 0 && !info.udpPeer && !info.xbee, "Ivy metadata is explicitly unavailable");
+      ++all;
+    });
+    const auto id = receiver.bind("EMPTY", {.senderId = 42}, [&](const Message &) { ++numeric; });
+    receiver.bind("EMPTY", {.sender = "plane.1"}, [&](const Message &) { ++literal; });
+    bool refused = false;
+    try { receiver.bind(pprzlink::ALL, {.receiverId = 42}, [](const Message &) {}); }
+    catch (const std::invalid_argument &) { refused = true; }
+    require(refused, "Ivy binary routing filters are rejected");
+    receiver.start();
+    waitBindings(sender, "reactive-rx", 1);
+    sendRaw(sender, "42 EMPTY"); sendRaw(sender, "43 EMPTY"); sendRaw(sender, "plane.1 EMPTY");
+    waitFor([&] { return all == 3 && numeric == 1 && literal == 1; }, "reactive Ivy source filters");
+    receiver.unbind(id);
+    sendRaw(sender, "42 EMPTY");
+    waitFor([&] { return all == 4; }, "reactive Ivy unbind");
+    require(numeric == 1, "Receiver-owned binding removed without affecting ALL");
+    require(receiver.getBus().take_callback_error().has_value(), "Reactive Ivy callback error");
+  }
+
   void testMessages(const MessageDictionary &dict, const std::string &domain)
   {
     std::atomic<int> decoded{0}, aircraft{0}, empty{0}, singles{0};
@@ -364,6 +390,7 @@ int main()
     const int port = 25000 + (getpid() % 10000) * 2;
     const auto domainA = "127.255.255.255:" + std::to_string(port);
     const auto domainB = "127.255.255.255:" + std::to_string(port + 1);
+    testReactive(dict, domainA);
     testMessages(dict, domainA);
     testCompactNumbers(dict, domainA);
     testRequests(dict, domainA);

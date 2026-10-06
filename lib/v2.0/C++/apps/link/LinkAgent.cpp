@@ -77,7 +77,7 @@ namespace link_app {
         ? Serial::Flowcontrol::hardware : Serial::Flowcontrol::none));
       device = std::move(serial);
     } else {
-      device = std::make_unique<pprzlink::PosixFileDevice>(options.device);
+      device = std::make_unique<pprzlink::PosixFileDevice>(context, options.device);
     }
     if (options.transport == "pprz") {
       transport = std::make_unique<pprzlink::PprzTransport>(std::move(device), dictionary);
@@ -93,7 +93,7 @@ namespace link_app {
       radio->startInitialization(configuration);
       xbee = std::make_unique<XbeeTransmitter>(*radio, options.xbeeRetries);
       radio->setStatusCallback([this](const Radio::RadioStatus &status) {
-        if (const auto result = std::get_if<Radio::TransmitStatus>(&status)) xbee->status(*result);
+        if (const auto result = std::get_if<Radio::TransmitStatus>(&status)) { xbee->status(*result); scheduleTransmission(); }
       });
       transport = std::move(radio);
     }
@@ -102,32 +102,20 @@ namespace link_app {
   void LinkAgent::run()
   {
     signals.async_wait([this](const boost::system::error_code &error, int) { if (!error) context.stop(); });
-    schedulePoll();
+    auto handler = [this](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
+      received(pprzlink::ReceivedMessage{message, info.frameSize, info.xbee, info.udpPeer});
+    };
+    auto errors = [](const pprzlink::ReceiveError &error) {
+      if (error.kind == pprzlink::ReceiveError::Kind::Decode) std::cerr << "Invalid link message: " << error.message << '\n';
+      else std::rethrow_exception(error.exception);
+    };
+    if (udp) { udp->bind(pprzlink::ALL, handler); udp->onError(errors); udp->start(); }
+    else { transport->bind(pprzlink::ALL, handler); transport->onError(errors); transport->start(); }
     scheduleStatus();
     scheduleAge();
     if (options.uplink) schedulePing(500ms + std::chrono::milliseconds(options.pingPeriod));
     context.run();
     ivy->checkError();
-  }
-
-  void LinkAgent::poll()
-  {
-    ivy->checkError();
-    for (int count = 0; count < 256; ++count) {
-      std::optional<pprzlink::ReceivedMessage> packet;
-      try {
-        packet = udp ? udp->tryReceive() : transport->tryReceive();
-      } catch (const pprzlink::pprzlink_exception &error) {
-        std::cerr << "Invalid link message: " << error.what() << '\n';
-        continue;
-      } catch (const std::out_of_range &error) {
-        std::cerr << "Invalid message payload: " << error.what() << '\n';
-        continue;
-      }
-      if (!packet) break;
-      received(std::move(*packet));
-    }
-    if (xbee) xbee->poll();
   }
 
   void LinkAgent::received(pprzlink::ReceivedMessage packet)
@@ -193,7 +181,7 @@ namespace link_app {
 
   void LinkAgent::sendRadio(const pprzlink::Message &message)
   {
-    if (xbee) xbee->send(message);
+    if (xbee) { xbee->send(message); scheduleTransmission(); }
     else transport->sendMessage(message);
   }
 
@@ -211,14 +199,16 @@ namespace link_app {
     ivy->send(text);
   }
 
-  void LinkAgent::schedulePoll()
+  void LinkAgent::scheduleTransmission()
   {
-    pollTimer.expires_after(5ms);
-    pollTimer.async_wait([this](const boost::system::error_code &error) {
-      if (error) return;
-      poll();
-      schedulePoll();
-    });
+    transmitTimer.cancel();
+    if (!xbee) return;
+    if (const auto deadline = xbee->nextDeadline()) {
+      transmitTimer.expires_at(*deadline);
+      transmitTimer.async_wait([this](const boost::system::error_code &error) {
+        if (!error) { xbee->poll(); scheduleTransmission(); }
+      });
+    }
   }
 
   void LinkAgent::scheduleStatus()

@@ -3,6 +3,7 @@
 #include <pprzlink/PprzTransport.h>
 #include <pprzlink/XbeeTransport.h>
 #include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <charconv>
 #include <chrono>
 #include <concepts>
@@ -154,21 +155,6 @@ the PPRZLINK v2 header. XML defines messages, not the transport mode.
     }, status);
   }
 
-  void printMessages(Transport &transport)
-  {
-    for (;;) {
-      try {
-        auto received = transport.tryReceive();
-        if (!received) return;
-        std::cout << ivy_codec::serializeMessage(received->message) << std::endl;
-      } catch (const pprzlink_exception &error) {
-        std::cerr << "Discarded message: " << error.what() << '\n';
-      } catch (const std::out_of_range &error) {
-        std::cerr << "Discarded truncated message: " << error.what() << '\n';
-      }
-    }
-  }
-
   void run(const Options &options)
   {
     MessageDictionary dictionary(options.messages);
@@ -189,8 +175,6 @@ the PPRZLINK v2 header. XML defines messages, not the transport mode.
     device->setFlowcontrol(BoostSerialPortDevice::Flowcontrol(options.hardwareFlowControl
         ? BoostSerialPortDevice::Flowcontrol::hardware : BoostSerialPortDevice::Flowcontrol::none));
 
-    device->startReception();
-
     std::unique_ptr<Transport> transport;
     XbeeTransport *xbee = nullptr;
     if (options.transport == "xbee") {
@@ -203,37 +187,49 @@ the PPRZLINK v2 header. XML defines messages, not the transport mode.
       transport = std::make_unique<PprzTransport>(std::move(device), dictionary);
     }
 
-    bool stopped = false;
     boost::asio::signal_set signals(context, SIGINT, SIGTERM);
-    signals.async_wait([&](const boost::system::error_code &error, int) { if (!error) stopped = true; });
-    if (xbee && !options.skipXbeeInitialization) {
-      xbee->startInitialization(options.xbeeConfiguration);
-      std::cout << "Initializing XBee modem" << std::endl;
-      while (!xbee->pollInitialization()) {
-        context.run_for(10ms);
-        if (stopped) return;
+    boost::asio::steady_timer duration(context);
+    auto stop = [&] { transport->stop(); signals.cancel(); duration.cancel(); };
+    signals.async_wait([&](const boost::system::error_code &error, int) { if (!error) stop(); });
+    transport->bind(ALL, [](const Message &message) {
+      std::cout << ivy_codec::serializeMessage(message) << std::endl;
+    });
+    transport->onError([](const ReceiveError &error) {
+      if (error.kind == ReceiveError::Kind::Decode) std::cerr << "Discarded message: " << error.message << '\n';
+      else std::rethrow_exception(error.exception);
+    });
+    auto listen = [&] {
+      if (xbee && !options.skipXbeeInitialization) {
+        if (const auto baud = xbee->getBaudrateInfo()) {
+          std::cout << "XBee baud rate: detected " << baud->detected
+                    << ", configured " << baud->configured
+                    << (baud->savedToFlash ? " (saved to flash)" : " (unchanged)") << std::endl;
+        }
+        std::cout << "XBee modem ready (AP=1)" << std::endl;
       }
-      if (const auto baud = xbee->getBaudrateInfo()) {
-        std::cout << "XBee baud rate: detected " << baud->detected
-                  << ", configured " << baud->configured
-                  << (baud->savedToFlash ? " (saved to flash)" : " (unchanged)") << std::endl;
+      if (outgoing) {
+        size_t written;
+        if (options.destination16) written = xbee->sendMessageTo16(*outgoing, *options.destination16);
+        else if (options.destination64) written = xbee->sendMessageTo64(*outgoing, *options.destination64);
+        else written = transport->sendMessage(*outgoing);
+        std::cout << "Wrote " << written << " serial bytes" << std::endl;
       }
-      std::cout << "XBee modem ready (AP=1)" << std::endl;
+      std::cout << "Listening with " << options.transport << " transport" << std::endl;
+      if (options.duration) {
+        duration.expires_after(std::chrono::seconds(options.duration));
+        duration.async_wait([&](const boost::system::error_code &error) { if (!error) stop(); });
+      }
+    };
+    if (xbee) {
+      xbee->onReady(listen);
+      if (!options.skipXbeeInitialization) {
+        xbee->startInitialization(options.xbeeConfiguration);
+        std::cout << "Initializing XBee modem" << std::endl;
+      }
     }
-    if (outgoing) {
-      size_t written;
-      if (options.destination16) written = xbee->sendMessageTo16(*outgoing, *options.destination16);
-      else if (options.destination64) written = xbee->sendMessageTo64(*outgoing, *options.destination64);
-      else written = transport->sendMessage(*outgoing);
-      std::cout << "Wrote " << written << " serial bytes" << std::endl;
-    }
-    std::cout << "Listening with " << options.transport << " transport" << std::endl;
-    const auto start = std::chrono::steady_clock::now();
-    while (!stopped && (options.duration == 0 ||
-           std::chrono::steady_clock::now() - start < std::chrono::seconds(options.duration))) {
-      context.run_for(10ms);
-      printMessages(*transport);
-    }
+    transport->start();
+    if (!xbee) listen();
+    context.run();
   }
 }
 

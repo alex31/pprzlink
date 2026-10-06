@@ -11,6 +11,7 @@
 #include "XbeeTransport.h"
 #include "detail/MessagePayload.h"
 #include <algorithm>
+#include <boost/asio/post.hpp>
 #include <format>
 #include <utility>
 
@@ -82,23 +83,70 @@ namespace pprzlink {
   }
 
   XbeeTransport::XbeeTransport(std::unique_ptr<Device> device, const MessageDictionary &dictionary, Api api)
-    : Transport(std::move(device), dictionary), api(api)
+    : Transport(std::move(device), dictionary, Kind::Xbee), api(api)
   {
     transportBuffer.reserve(maximumFrameDataSize + envelopeSize);
   }
 
-  bool XbeeTransport::hasMessage()
+  XbeeTransport::~XbeeTransport()
   {
-    if (!pollInitialization()) return false;
-    if (!currentMessage) decodeMessage();
-    return static_cast<bool>(currentMessage);
+    shutdown();
+    try { stop(); } catch (...) {}
   }
 
-  std::unique_ptr<Message> XbeeTransport::getMessage()
+  void XbeeTransport::stop()
   {
-    if (!pollInitialization()) return nullptr;
-    if (!currentMessage) decodeMessage();
-    return std::move(currentMessage);
+    auto lock = lockReceiver();
+    if (initializationTimer) initializationTimer->cancel();
+    Transport::stop();
+  }
+
+  void XbeeTransport::receptionStarted()
+  {
+    boost::asio::post(device->getExecutor(), guarded([this] {
+      try { receiveAvailable(); } catch (...) { stop(); throw; }
+    }));
+  }
+
+  void XbeeTransport::receiveAvailable()
+  {
+    if (!progressInitialization(XbeeModem::Clock::now()) || !isRunning()) return;
+    if (!readyNotified) {
+      readyNotified = true;
+      auto callback = readyCallback;
+      if (callback) callback();
+    }
+    if (!isRunning() || !isReady()) return;
+    const auto bytes = receiveBytes();
+    transportBuffer.insert(transportBuffer.end(), bytes.begin(), bytes.end());
+    while (isRunning()) {
+      bool decoded;
+      try { decoded = decodeMessage(); }
+      catch (...) {
+        if (statusFailure) { auto error = std::exchange(statusFailure, {}); stop(); std::rethrow_exception(error); }
+        reportError(std::current_exception(), ReceiveError::Kind::Decode);
+        continue;
+      }
+      if (!decoded) break;
+      auto message = std::move(currentMessage);
+      deliver(*message, pprzlink::ReceiveInfo{lastReceivedFrameSize, receiveInfo, std::nullopt});
+    }
+  }
+
+  void XbeeTransport::scheduleInitialization()
+  {
+    if (!initialization || !isRunning()) return;
+    if (!initializationTimer) initializationTimer = std::make_shared<boost::asio::steady_timer>(device->getExecutor());
+    initializationTimer->cancel();
+    if (const auto deadline = initialization->nextDeadline()) {
+      initializationTimer->expires_at(*deadline);
+      auto notification = guarded([this] {
+        try { receiveAvailable(); } catch (...) { stop(); throw; }
+      });
+      initializationTimer->async_wait([timer = initializationTimer, notification](const boost::system::error_code &error) mutable {
+        if (!error) notification();
+      });
+    }
   }
 
   size_t XbeeTransport::sendMessage(const Message &message)
@@ -106,13 +154,6 @@ namespace pprzlink {
     const uint16_t destination = message.getReceiverId() == 255 ? 0xffff : message.getReceiverId();
     return api == Api::Series868 ? sendMessageTo64(message, destination)
                                  : sendMessageTo16(message, destination);
-  }
-
-  std::optional<ReceivedMessage> XbeeTransport::tryReceive()
-  {
-    auto received = Transport::tryReceive();
-    if (received) received->xbee = receiveInfo;
-    return received;
   }
 
   size_t XbeeTransport::sendMessageWithId(const Message &message, uint8_t frameId)
@@ -134,6 +175,7 @@ namespace pprzlink {
 
   size_t XbeeTransport::sendTo(const Message &message, uint64_t destination, bool addressIs64Bit, std::optional<uint8_t> requestedId)
   {
+    auto lock = lockReceiver();
     if (!isReady()) throw std::logic_error("XBee initialization must succeed before sending messages");
     const auto payload = detail::encodeMessagePayload(message, maximumRfPayloadSize);
     const size_t addressSize = addressIs64Bit ? 8 : 2;
@@ -189,6 +231,7 @@ namespace pprzlink {
 
   void XbeeTransport::startInitialization(const XbeeConfiguration &configuration, XbeeModem::TimePoint now)
   {
+    auto lock = lockReceiver();
     // Validate before replacing a previous initialization or discarding received data.
     auto modem = XbeeModem(configuration, now);
     initialization = std::move(modem);
@@ -197,12 +240,22 @@ namespace pprzlink {
     receiveInfo.reset();
     lastFrameId = 0;
     lastReceivedFrameSize = 0;
+    readyNotified = false;
+    if (isRunning()) receptionStarted();
   }
 
-  bool XbeeTransport::pollInitialization(XbeeModem::TimePoint now)
+  bool XbeeTransport::progressInitialization(XbeeModem::TimePoint now)
   {
     if (!initialization) return true;
-    if (!initialization->poll(*device, now)) return false;
+    try {
+      if (!initialization->poll(*device, now)) { scheduleInitialization(); return false; }
+    } catch (...) {
+      auto error = std::current_exception();
+      stop();
+      reportError(error, ReceiveError::Kind::Initialization);
+      return false;
+    }
+    if (initializationTimer) initializationTimer->cancel();
     const auto remaining = initialization->takeRemainingBytes();
     transportBuffer.insert(transportBuffer.end(), remaining.begin(), remaining.end());
     return true;
@@ -216,7 +269,10 @@ namespace pprzlink {
       }
     };
     const auto notify = [&](const RadioStatus &status) {
-      if (statusCallback) statusCallback(status);
+      if (statusCallback) {
+        try { statusCallback(status); }
+        catch (...) { statusFailure = std::current_exception(); throw; }
+      }
     };
 
     switch (data[0]) {
@@ -274,13 +330,11 @@ namespace pprzlink {
   /// Payload/callback exceptions consume their complete API frame before propagation.
   bool XbeeTransport::decodeMessage()
   {
-    const auto received = device->readAll();
-    transportBuffer.insert(transportBuffer.end(), received.begin(), received.end());
     size_t cursor = 0;
     const auto discardThrough = [&](size_t end) {
       transportBuffer.erase(transportBuffer.begin(), transportBuffer.begin() + end);
     };
-    while (cursor < transportBuffer.size()) {
+    while (isRunning() && cursor < transportBuffer.size()) {
       const auto start = std::find(transportBuffer.begin() + cursor, transportBuffer.end(), startByte);
       statistics.discardedBytes += static_cast<size_t>(start - (transportBuffer.begin() + cursor));
       cursor = static_cast<size_t>(start - transportBuffer.begin());
@@ -307,8 +361,10 @@ namespace pprzlink {
       try {
         decodeFrame(remaining.subspan(3, dataSize));
       } catch (...) {
-        ++statistics.decodingErrors;
-        statistics.discardedBytes += dataSize + envelopeSize;
+        if (!statusFailure) {
+          ++statistics.decodingErrors;
+          statistics.discardedBytes += dataSize + envelopeSize;
+        }
         discardThrough(cursor);
         throw;
       }

@@ -2,6 +2,7 @@
 // Aircraft-side workshop peer: answer an altitude request from ground station 0.
 #include <pprzlink/BoostSerialPortDevice.h>
 #include <pprzlink/PprzTransport.h>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <iostream>
 #include <memory>
@@ -27,23 +28,21 @@ int main(int argc, char **argv)
     pprzlink::PprzTransport transport(std::move(device), dictionary);
 
     std::cout << "Responder ready on " << argv[2] << std::endl;
-    const auto deadline = std::chrono::steady_clock::now() + 60s;
-    while (std::chrono::steady_clock::now() < deadline) {
-      if (auto received = transport.tryReceive()) {
-        const auto &request = received->message;
-        if (request.getDefinition().getName() != "GUIDE_ALTITUDE_REQ" ||
-            request.getReceiverId() != 42 || std::get<uint8_t>(request.getSenderId()) != 0) continue;
-        pprzlink::Message altitude(dictionary.getDefinition("GUIDE_ALTITUDE"));
-        altitude.setSenderId(42);
-        altitude.setReceiverId(0);
-        altitude.setFieldSI("altitude", 123.5); // Metres, independently of the XML representation.
-        transport.sendMessage(altitude);
-        std::cout << "Answered GUIDE_ALTITUDE_REQ with 123.5 m\n";
-        return 0;
-      }
-      context.restart();
-      context.run_for(10ms);
-    }
+    bool answered = false;
+    boost::asio::steady_timer timeout(context, 60s);
+    timeout.async_wait([&](const boost::system::error_code &error) { if (!error) transport.stop(); });
+    transport.bind("GUIDE_ALTITUDE_REQ", {.senderId = 0, .receiverId = 42}, [&](const pprzlink::Message &) {
+      pprzlink::Message altitude(dictionary.getDefinition("GUIDE_ALTITUDE"));
+      altitude.setSenderId(42);
+      altitude.setReceiverId(0);
+      altitude.setFieldSI("altitude", 123.5);
+      transport.sendMessage(altitude);
+      std::cout << "Answered GUIDE_ALTITUDE_REQ with 123.5 m\n";
+      answered = true; transport.stop(); timeout.cancel();
+    });
+    transport.start();
+    context.run();
+    if (answered) return 0;
     throw std::runtime_error("No altitude request within 60 seconds");
   } catch (const std::exception &error) {
     std::cerr << argv[0] << ": " << error.what() << '\n';

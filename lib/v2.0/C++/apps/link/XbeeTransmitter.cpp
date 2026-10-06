@@ -34,6 +34,16 @@ namespace link_app {
     }
   }
 
+  std::optional<XbeeTransmitter::Clock::time_point> XbeeTransmitter::nextDeadline() const
+  {
+    std::optional<Clock::time_point> deadline;
+    for (const auto &entry : pending) if (entry) {
+      const auto next = entry->retryAt.value_or(entry->expires);
+      if (!deadline || next < *deadline) deadline = next;
+    }
+    return deadline;
+  }
+
   void XbeeTransmitter::poll(Clock::time_point now)
   {
     for (size_t id = 1; id < pending.size(); ++id) {

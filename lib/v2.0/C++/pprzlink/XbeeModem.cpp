@@ -278,6 +278,18 @@ namespace pprzlink {
     return isReady() ? baudrateInfo : std::nullopt;
   }
 
+  std::optional<XbeeModem::TimePoint> XbeeModem::nextDeadline() const noexcept
+  {
+    switch (stage) {
+      case Stage::GuardBefore: return guardDeadline;
+      case Stage::GuardAfter: return entered ? guardDeadline : responseDeadline;
+      case Stage::Command: return responseDeadline;
+      case Stage::Ready:
+      case Stage::Failed: return std::nullopt;
+    }
+    return std::nullopt;
+  }
+
   BytesBuffer XbeeModem::takeRemainingBytes()
   {
     return std::exchange(remainingBytes, {});

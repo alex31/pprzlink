@@ -14,6 +14,7 @@ namespace link_app {
     XbeeTransmitter(pprzlink::XbeeTransport &transport, int maximumAttempts);
     void send(const pprzlink::Message &message, Clock::time_point now = Clock::now());
     void status(const pprzlink::XbeeTransport::TransmitStatus &status, Clock::time_point now = Clock::now());
+    std::optional<Clock::time_point> nextDeadline() const;
     void poll(Clock::time_point now = Clock::now());
 
   private:

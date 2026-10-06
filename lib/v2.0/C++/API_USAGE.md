@@ -36,9 +36,9 @@ uniquement à `pprzlink::io` et peuvent également utiliser le SDK sans Ivy.
    fractionnaire lors d'une conversion vers un entier. Une erreur ne remplace
    pas la valeur déjà présente. Les lectures `getField<T>()` restent strictes ;
    `getFieldAs<T>()` demande explicitement une conversion numérique scalaire contrôlée.
-2. `tryReceive()` retourne un message et ses métadonnées par valeur, ou
-   `std::nullopt` si aucun message complet n'est disponible. Les erreurs restent
-   des exceptions ; les anciennes méthodes de réception restent disponibles.
+2. `bind()` conserve un abonnement qui reçoit un message et ses métadonnées
+   facultatives. `start()` active la réception réactive et `stop()` l'annule.
+   Les méthodes de réception des transports par polling ont été retirées.
 3. `subscribeMessage()` et `subscribeSender()` retournent directement
    `ivy::Subscription`. L'appelant conserve le jeton ; sa destruction désabonne.
    Les anciennes fonctions à identifiant numérique gardent leur contrat.
@@ -277,38 +277,99 @@ de sortie. Utilisez des éléments `const` : `const auto` seul ne rend pas les
 éléments d'un `std::span<T>` constants, et les spans modifiables ne sont pas
 acceptés par ces getters.
 
-## Réception : un message et ses métadonnées
+## Réception réactive : abonnements et filtres
+
+`UdpTransport`, `PprzTransport`, `XbeeTransport` et `IvyLink` partagent `bind()`.
+Les transports binaires utilisent le contexte Asio fourni par l'application ;
+Ivy utilise sa boucle native. Aucun thread de polling n'est créé.
 
 ```cpp
-if (auto received = transport.tryReceive()) {
-    const auto &message = received->message;
-    const auto bytes = received->frameSize;
-    if (received->xbee) {
-        const auto radioAddress = received->xbee->sourceAddress;
-        // Utiliser rssi seulement si hasRssi est vrai.
-    }
-    if (received->udpPeer) {
-        // Adresse et port de ce datagramme précis, conservés par valeur.
-    }
-}
+receiver.bind("GUIDE_ALTITUDE", [](const pprzlink::Message &message) {
+    std::cout << message.getFieldSI("altitude") << " m\n";
+});
+receiver.bind(pprzlink::ALL,
+    [](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
+        if (info.udpPeer) {
+            std::cout << info.udpPeer->address << ':' << info.udpPeer->port << '\n';
+        }
+        std::cout << message.toString() << '\n';
+    });
+receiver.start();
+context.run(); // Pour UDP et les Device Asio. Avec Ivy : link.run().
 ```
 
-`PprzTransport`, `XbeeTransport`, `PprzFrameDecoder` et `UdpTransport` proposent
-cette opération. Elle effectue une tentative de lecture/décodage ; `nullopt`
-signifie qu'aucun message complet n'a été produit pendant cet appel. Un transport
-peut également traiter des statuts radio ou avancer l'initialisation XBee.
-Les erreurs de contenu et d'I/O restent des exceptions. Une trame invalide est
-consommée selon le contrat du décodeur ; l'appel suivant peut poursuivre.
+Le récepteur conserve les callbacks jusqu'à `unbind(id)` ou sa destruction.
+L'identifiant retourné par `bind()` n'est pas un jeton RAII : un appel sans
+variable de retour reste actif. Le nom du message est résolu au moment du bind.
+`ALL` sélectionne tous les messages correctement décodés du dictionnaire.
 
-Les anciennes méthodes `hasMessage()`, `getMessage()` et les getters de dernières
-métadonnées restent disponibles. Les nouvelles valeurs retournées ne changent
-pas après une réception ultérieure.
+```cpp
+auto id = receiver.bind("GUIDE_ALTITUDE",
+    {.senderId = 42, .udpAddress = "192.168.1.10"},
+    [](const pprzlink::Message &message) { /* traiter l'altitude */ });
+receiver.unbind(id);
+```
 
-`UdpTransport::sendMessage(message, destination)` demande une destination
-explicite. Le destinataire PPRZLINK dans le message et le pair réseau sont deux
-informations distinctes. `localEndpoint()` expose le port attribué si le port
-local demandé était zéro. Les trames incomplètes sont abandonnées à la frontière
-du datagramme pour éviter de mélanger deux émetteurs.
+| Critère de `ReceiveFilter` | Sélection |
+| --- | --- |
+| `senderId` | Identifiant PPRZLINK 0..255 ; les expéditeurs Ivy numériques sont aussi reconnus. |
+| `sender` | Expéditeur Ivy textuel exact. |
+| `receiverId` | Destination binaire 0..255 ; 255 signifie broadcast. |
+| `className`, `classId` | Classe du dictionnaire, par nom ou identifiant 0..15. |
+| `componentId` | Composant binaire 0..15. |
+| `udpPeer` | Adresse IP et port source exacts du datagramme. |
+| `udpAddress`, `udpPort` | Adresse IP seule ou port source seul. |
+| `xbeeAddress` | Adresse radio source, indépendante de `senderId`. |
+| `minimumRssi` | Seuil négatif en dBm ; les trames sans RSSI ne correspondent pas. |
+| `where` | Prédicat booléen prenant le message, avec métadonnées en second argument facultatif. |
+
+Les critères se combinent avec ET. Des conditions alternatives peuvent être
+exprimées dans `where`, par exemple destination 42 ou broadcast. Les identifiants
+hors plage, classes inconnues et filtres incompatibles avec le transport sont
+refusés au bind. Ivy ne transmet pas les IDs binaires de destination/composant.
+Les adresses UDP sont numériques et normalisées ; aucune résolution DNS n'est faite.
+
+Chaque message est décodé une fois et présenté par référence constante aux
+abonnements correspondants, dans l'ordre d'inscription. Un abonnement ajouté
+pendant un callback commence au message suivant ; un abonnement retiré ne sera
+plus invoqué. `stop()` désactive immédiatement la distribution et annule les
+lectures de ce récepteur, sans arrêter le contexte Asio partagé. `start()` peut
+le réactiver, en conservant les abonnements. Les callbacks d'un récepteur sont
+sérialisés, y compris lorsque plusieurs threads exécutent le contexte.
+
+Les références de message/métadonnées et les `span`/`string_view` empruntés sont
+valables pendant le callback. Copiez un `Message` et/ou `ReceiveInfo` pour les
+conserver ; recréez les vues à partir de la copie. Une lambda peut envoyer une
+réponse, appeler `stop()` ou `unbind()`. Détruisez le récepteur après la sortie
+du callback. Les callbacks longs retardent les autres événements du contexte.
+
+```cpp
+receiver.onError([](const pprzlink::ReceiveError &error) {
+    if (error.kind == pprzlink::ReceiveError::Kind::Decode)
+        std::cerr << "Trame ignorée : " << error.message << '\n';
+    else
+        std::rethrow_exception(error.exception);
+});
+```
+
+Une trame invalide est consommée, puis le décodage peut continuer. Par défaut,
+les erreurs de décodage sont comptées et ignorées ; les erreurs terminales
+arrêtent la réception et remontent dans la boucle. `onError()` peut les traiter.
+Les exceptions des prédicats et callbacks applicatifs arrêtent la réception
+et restent visibles ; elles ne sont pas converties en erreurs de trame.
+
+Les méthodes de réception des transports `tryReceive()`, `hasMessage()` et
+`getMessage()` ont été retirées sur cette branche. Le décodeur sans I/O
+`PprzFrameDecoder` conserve `pushBytes()` et ses lectures incrémentales pour
+les intégrations qui fournissent elles-mêmes les octets.
+
+`UdpTransport::sendMessage(message, destination)` demande une destination réseau
+explicite. Le pair UDP et l'identifiant PPRZLINK sont indépendants. Les messages
+d'un même datagramme gardent sa source ; les trames incomplètes sont abandonnées
+à sa frontière pour éviter de mélanger deux datagrammes ou deux émetteurs.
+
+L'exemple [WorkshopUdp.cpp](pprzlink/examples/clients/WorkshopUdp.cpp) propose
+les modes `both`, `emitter` et `receiver` de l'atelier.
 
 ## Ivy : utiliser la propriété déjà fournie par Ivy C++
 
@@ -340,8 +401,9 @@ Conserver le jeton aussi longtemps que l'abonnement est souhaité. Un callback
 déjà commencé peut finir après le désabonnement : son état capturé doit rester
 vivant. Les callbacks exécutent sur la boucle Ivy ; l'exemple utilise la boucle
 sur le thread appelant. Une interface graphique doit encore transférer les
-mises à jour sur son propre thread. Aucun nouveau système d'abonnement n'est
-introduit au-dessus de celui d'Ivy.
+mises à jour sur son propre thread. Ces abonnements natifs restent disponibles ;
+la façade commune `bind()` conserve ses propres identifiants et filtres dans le
+récepteur et les alimente depuis une souscription Ivy native.
 
 ## Dépendances choisies par le client
 
@@ -441,7 +503,7 @@ liste sont couvertes.
 - Construction sans Ivy : **15/15 tests**, sans préfixe Ivy dans l'environnement
   d'exécution et avec la découverte pkg-config désactivée à la configuration.
 - Les **17 scénarios comparatifs de link++/OCaml** passent après adoption de
-  `tryReceive()` et de `UdpTransport` par l'agent.
+  abonnements réactifs et de `UdpTransport` par l'agent.
 - Les trois clients sont copiés hors du dépôt, compilés et exécutés contre le
   SDK installé. Les clients série/UDP sont aussi compilés et exécutés sans Ivy,
   depuis un SDK complet et depuis un SDK sans Ivy.
@@ -469,7 +531,7 @@ mais les écritures numériques invalides sont désormais rejetées.
 | Observation dans les exemples | Amélioration à examiner ensuite |
 | --- | --- |
 | Le récepteur Ivy utilise `getBus()` pour son délai. | Délais et annulation des requêtes au niveau PPRZLINK ; `sendRequest()` conserve encore son interface historique. |
-| Le simulateur fait tourner Asio ; l'enregistreur interroge UDP périodiquement. | Réception asynchrone intégrable dans une boucle existante, sans créer de thread implicite. |
+| La réception utilise les callbacks de lecture et la boucle Asio fournie. | Intégration GUI avec transfert des messages vers le thread de l’interface. |
 | Les callbacks Ivy peuvent s'exécuter sur un thread distinct. | Exemple d'intégration GUI avec transfert explicite des événements et durée de vie des objets. |
 | La lecture convertie couvre les scalaires. | Évaluer les conversions explicites de tableaux à partir d'un vrai client qui en a besoin. |
 | Le récepteur écrit l'unité « m » dans son code. | Exposer davantage de métadonnées XML, comme les unités et les valeurs d'énumération, pour un afficheur générique. |

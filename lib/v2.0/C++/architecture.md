@@ -12,7 +12,7 @@ Les réponses aux questions principales sont les suivantes :
 - Le XML décrit déjà le contenu des messages : identifiants, noms, ordre et
   types des champs, ainsi que certaines informations documentaires.
 - Un callback Ivy reçoit déjà **un message complet avec tous ses champs**.
-  Les transports binaires rendent le même contenu par `tryReceive()`.
+  Les transports binaires distribuent le même contenu par `bind()` sur leur boucle Asio.
 - L'envoi utilise déjà **un seul appel pour le message complet**. Son
   remplissage accepte plusieurs couples clé/valeur dans `setField()`.
   La bibliothèque C++ ne génère pas encore de structure propre à chaque message.
@@ -246,7 +246,9 @@ classDiagram
     }
     class Transport {
         <<abstract>>
-        tryReceive()
+        bind(message, callback)
+        start()
+        stop()
         sendMessage(message)
     }
     Device <|-- SerialDevice
@@ -275,8 +277,8 @@ fichier ou de FIFO.
 [`Transport`](pprzlink/Transport.h) est une classe abstraite au niveau des
 **messages**. Elle possède son périphérique via `std::unique_ptr<Device>` et
 emprunte le dictionnaire. Elle déclare les opérations virtuelles d'envoi et de
-réception ; les anciennes méthodes `hasMessage()` et `getMessage()` restent
-disponibles à côté de `tryReceive()`.
+réception événementielle. `bind()` conserve les abonnements ; `start()` active
+les lectures et `stop()` les annule. Les méthodes de réception par polling ont été retirées.
 
 `PprzTransport` ajoute l'enveloppe PPRZ au message binaire. `XbeeTransport`
 transporte le message dans les trames API du modem XBee, traite les adresses
@@ -377,43 +379,38 @@ requête/réponse ; leurs callbacks reçoivent également des messages complets.
 Les requêtes sont reconnues par le suffixe `_REQ` et utilisent `sendRequest()`
 au lieu de `sendMessage()`.
 
-### Sur série, XBee et UDP : un objet complet rendu à l'appelant
-
-Ces classes exposent `tryReceive()`, qui retourne
-`std::optional<ReceivedMessage>`. Elles n'exposent pas actuellement un
-abonnement de réception de messages équivalent à celui d'Ivy.
-
-Voici comment une application peut raccorder cette réception à son callback :
+### Sur série, XBee et UDP : des abonnements sur le contexte Asio
 
 ```cpp
-#include <pprzlink/Transport.h>
-#include <functional>
-
-void receiveAvailable(
-    pprzlink::Transport& transport,
-    const std::function<void(const pprzlink::ReceivedMessage&)>& onMessage)
-{
-    while (auto received = transport.tryReceive()) {
-        onMessage(*received);
-    }
-}
+transport.bind(pprzlink::ALL,
+    [](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
+        // Le message et les métadonnées appartiennent à cette invocation.
+        std::cout << message.toString() << '\n';
+    });
+transport.start();
+context.run();
 ```
 
-Cette fonction est un **adaptateur écrit par l'application**, pas une méthode
-supplémentaire de la bibliothèque. Le même corps fonctionne avec un paramètre
-`UdpTransport&`. Elle doit être appelée à nouveau depuis la boucle de
-l'application ; `nullopt` signifie qu'aucun message complet n'a été produit
-pendant l'appel, pas que la liaison est terminée. Pour la série Asio, il faut
-aussi faire tourner le `io_context` pour alimenter la réception.
+Le callback de lecture alimente le décodeur, puis les abonnements correspondants.
+UDP utilise `async_receive_from()` ; les flux série et POSIX notifient le transport
+après avoir reçu les octets. Les callbacks applicatifs s'exécutent hors des verrous
+d'I/O, dans le contexte fourni, et sont sérialisés par récepteur. Aucun thread
+supplémentaire n'interroge les canaux. Les gardes et réponses AT XBee utilisent
+des échéances Asio, indépendamment de l'arrivée de messages applicatifs.
 
-`ReceivedMessage` rassemble le `message`, la taille complète de sa trame et,
-si disponibles, les informations XBee ou le pair UDP. Ces données sont possédées
-par la valeur retournée et ne changent pas lors de la réception suivante. Dans
-l'adaptateur ci-dessus, le callback emprunte cette valeur pendant son appel ;
-il doit la copier s'il veut la conserver.
+`ReceiveInfo` contient la taille complète de trame et les métadonnées UDP/XBee
+lorsqu'elles existent. Ses références et celles du message sont valables pendant
+le callback. Les vues `span`/`string_view` héritent de cette durée de vie : copiez
+le message pour le conserver et créez de nouvelles vues sur la copie.
 
-`XbeeTransport::setStatusCallback()` concerne les statuts radio, modem et AT.
-Ce n'est pas un abonnement aux champs des messages PPRZLINK reçus.
+Le récepteur conserve les bindings. Les filtres supplémentaires utilisent
+`ReceiveFilter` et se combinent avec ET : émetteur, destinataire, classe, composant,
+origine UDP, origine radio/RSSI et prédicat sur les champs. Voir le
+[contrat détaillé](API_USAGE.md#réception-réactive--abonnements-et-filtres).
+
+`XbeeTransport::setStatusCallback()` observe les statuts radio, modem et AT.
+Ils sont distribués dès leur décodage, même si aucun message PPRZLINK ne correspond
+à un abonnement. `onReady()` observe la fin du dialogue d'initialisation.
 
 ## 6. Envoi : tous les champs dans un seul appel ?
 
@@ -546,8 +543,8 @@ réception réutilisé.
 Un `Transport` possède son `Device`. Un `UdpTransport` possède son socket.
 Les objets utilisant un `boost::asio::io_context` fourni par l'application
 exigent que ce contexte leur survive. Le port série effectue ses réceptions
-asynchrones grâce à cette boucle ; UDP est interrogé par des lectures
-non bloquantes dans `tryReceive()`.
+asynchrones grâce à cette boucle ; UDP utilise également des lectures asynchrones
+et distribue les messages depuis leurs callbacks de fin de réception.
 
 Les appels sur un même transport doivent être sérialisés par l'application.
 `IvyLink` autorise les envois et opérations d'abonnement depuis plusieurs

@@ -9,6 +9,7 @@
 
 #include "UdpTransport.h"
 #include <array>
+#include <mutex>
 
 namespace pprzlink {
   /// @brief Internal conversion between value endpoints and native Asio endpoints.
@@ -24,56 +25,110 @@ namespace pprzlink {
     }
   }
 
+  /// @brief Socket and operation buffers retained until canceled completions finish.
+  /// @ingroup internals
+  struct UdpTransport::IoState {
+    /// @brief Bind socket operations to the supplied execution context.
+    /// @param[in] context Event loop that outlives pending completions.
+    explicit IoState(boost::asio::io_context &context) : socket(context) {}
+    boost::asio::ip::udp::socket socket; ///< Owned UDP socket.
+    std::mutex mutex; ///< Protects operations and the shared buffer/peer pair.
+    std::array<uint8_t, 65536> bytes; ///< Storage for one complete datagram.
+    boost::asio::ip::udp::endpoint peer; ///< Source endpoint written by the same receive operation.
+    bool pending = false; ///< Prevents read buffer reuse before completion.
+  };
+
   UdpTransport::UdpTransport(boost::asio::io_context &context,
                              const MessageDictionary &dictionary, const UdpOptions &options)
-    : socket(context), decoder(dictionary)
+    : Receiver(dictionary, Kind::Udp), io(std::make_shared<IoState>(context)), decoder(dictionary)
   {
     const auto local = socketEndpoint(options.local);
-    socket.open(local.protocol());
-    socket.set_option(boost::asio::socket_base::broadcast(options.broadcast));
-    socket.bind(local);
-    socket.non_blocking(true);
+    io->socket.open(local.protocol());
+    io->socket.set_option(boost::asio::socket_base::broadcast(options.broadcast));
+    io->socket.bind(local);
   }
 
-  /// @details Drain all decodable frames belonging to pendingPeer before reading
-  /// another datagram. Discard an incomplete datagram tail and bound each polling
-  /// call to 64 receive attempts, even under a stream of empty/invalid datagrams.
-  std::optional<ReceivedMessage> UdpTransport::tryReceive()
+  UdpTransport::~UdpTransport()
   {
-    std::array<uint8_t, 65536> bytes;
-    // Bound work even if the socket continuously receives empty or invalid datagrams.
-    for (int count = 0; count < 64; ++count) {
-      if (pendingPeer) {
-        if (auto received = decoder.tryReceive()) {
-          received->udpPeer = pendingPeer;
-          return received;
-        }
-        decoder.discardPendingInput();
-        pendingPeer.reset();
+    auto lock = lockReceiver();
+    shutdown();
+    std::lock_guard ioLock(io->mutex);
+    boost::system::error_code ignored;
+    io->socket.close(ignored);
+  }
+
+  void UdpTransport::start()
+  {
+    auto lock = lockReceiver();
+    if (!activate()) return;
+    ++generation;
+    try { armReceive(); } catch (...) { deactivate(); throw; }
+  }
+
+  void UdpTransport::stop()
+  {
+    auto lock = lockReceiver();
+    deactivate();
+    ++generation;
+    std::lock_guard ioLock(io->mutex);
+    io->socket.cancel();
+  }
+
+  void UdpTransport::armReceive()
+  {
+    std::lock_guard ioLock(io->mutex);
+    if (!isRunning() || io->pending) return;
+    auto completion = guarded([this, session = generation](const boost::system::error_code &error,
+                                                                const BytesBuffer &bytes, const UdpEndpoint &peer) {
+      if (session != generation) { armReceive(); return; }
+      if (error) {
+        stop();
+        reportError(std::make_exception_ptr(boost::system::system_error(error)), ReceiveError::Kind::Io);
+        return;
       }
-      boost::asio::ip::udp::endpoint peer;
-      boost::system::error_code error;
-      const auto size = socket.receive_from(boost::asio::buffer(bytes), peer, 0, error);
-      if (error == boost::asio::error::would_block || error == boost::asio::error::try_again)
-        return std::nullopt;
-      if (error) throw boost::system::system_error(error);
-      pendingPeer = UdpEndpoint{peer.address().to_string(), peer.port()};
-      decoder.pushBytes(std::span(bytes).first(size));
-    }
-    return std::nullopt;
+      try {
+        decoder.pushBytes(bytes);
+        while (isRunning()) {
+          std::optional<ReceivedMessage> received;
+          try { received = decoder.tryReceive(); }
+          catch (...) { reportError(std::current_exception(), ReceiveError::Kind::Decode); continue; }
+          if (!received) break;
+          deliver(received->message, ReceiveInfo{received->frameSize, std::nullopt, peer});
+        }
+        decoder.discardPendingInput(); // Never combine partial frames from different datagrams/peers.
+        if (isRunning()) armReceive();
+      } catch (...) { stop(); throw; }
+    });
+    io->pending = true;
+    io->socket.async_receive_from(boost::asio::buffer(io->bytes), io->peer,
+      [io = io, completion](const boost::system::error_code &error, size_t size) mutable {
+        BytesBuffer bytes;
+        UdpEndpoint peer;
+        {
+          std::lock_guard lock(io->mutex);
+          bytes.assign(io->bytes.begin(), io->bytes.begin() + size);
+          peer = {io->peer.address().to_string(), io->peer.port()};
+          io->pending = false;
+        }
+        completion(error, bytes, peer);
+      });
   }
 
   size_t UdpTransport::sendMessage(const Message &message, const UdpEndpoint &destination)
   {
     const auto bytes = encodePprzFrame(message);
-    const auto sent = socket.send_to(boost::asio::buffer(bytes), socketEndpoint(destination));
+    auto lock = lockReceiver();
+    std::lock_guard ioLock(io->mutex);
+    const auto sent = io->socket.send_to(boost::asio::buffer(bytes), socketEndpoint(destination));
     if (sent != bytes.size()) throw std::runtime_error("Incomplete UDP write");
     return sent;
   }
 
   UdpEndpoint UdpTransport::localEndpoint() const
   {
-    const auto local = socket.local_endpoint();
+    auto lock = lockReceiver();
+    std::lock_guard ioLock(io->mutex);
+    const auto local = io->socket.local_endpoint();
     return {local.address().to_string(), local.port()};
   }
 }

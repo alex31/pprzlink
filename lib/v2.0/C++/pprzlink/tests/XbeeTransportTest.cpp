@@ -31,10 +31,10 @@ namespace {
     bytes.insert(bytes.end(), suffix.begin(), suffix.end());
   }
 
-  void requireByte(XbeeTransport &transport, uint8_t value = 123)
+  void requireByte(ReceiptQueue &inbox, uint8_t value = 123)
   {
-    require(transport.hasMessage() && transport.hasMessage(), "hasMessage preserves unread message");
-    const auto message = transport.getMessage();
+    require(inbox.hasMessage() && inbox.hasMessage(), "Callback inbox preserves unconsumed messages");
+    const auto message = inbox.getMessage();
     require(message && message->getField<uint8_t>("value") == value, "Decode XBee RF payload");
     require(std::get<uint8_t>(message->getSenderId()) == 42 && message->getReceiverId() == 7 &&
             message->getComponentId() == 3 && message->getClassId() == 1, "Preserve PPRZLINK header");
@@ -45,6 +45,7 @@ namespace {
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     XbeeTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     Message message(dictionary.getDefinition("BYTE"));
     message.addField("value", 123);
     message.setSenderId(std::string("42"));
@@ -104,39 +105,41 @@ namespace {
         auto deviceOwner = std::make_unique<MemoryDevice>();
         auto &device = *deviceOwner;
         XbeeTransport transport(std::move(deviceOwner), dictionary);
+        ReceiptQueue inbox(transport);
         require(!transport.getLastReceiveInfo(), "No metadata before first RX");
         device.incoming.assign(fixture.begin(), fixture.begin() + split);
-        require(transport.hasMessage() == (split == fixture.size()), "Fragmented XBee frame completeness");
+        require(inbox.hasMessage() == (split == fixture.size()), "Fragmented XBee frame completeness");
         device.incoming.assign(fixture.begin() + split, fixture.end());
-        requireByte(transport);
+        requireByte(inbox);
         const auto &info = *transport.getLastReceiveInfo();
         const bool is64 = fixture[3] == 0x80;
         require(info.addressIs64Bit == is64 && info.rssi == 64 && info.options == (is64 ? 2 : 0) &&
                 info.sourceAddress == (is64 ? uint64_t{0x0013a200405291ab} : 0x1234), "Radio RX metadata");
-        require(!transport.getMessage(), "Exactly one message");
+        require(!inbox.getMessage(), "Exactly one message");
       }
     }
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     XbeeTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     for (const auto byte : rx64) {
       device.incoming = {byte};
-      transport.hasMessage();
+      inbox.hasMessage();
     }
-    requireByte(transport);
+    requireByte(inbox);
     device.incoming = rx16;
     append(device.incoming, rx64);
-    requireByte(transport);
-    requireByte(transport);
-    require(!transport.hasMessage(), "Concatenated frames drained");
+    requireByte(inbox);
+    requireByte(inbox);
+    require(!inbox.hasMessage(), "Concatenated frames drained");
 
     // In AP=1 all payload bytes, including 0x7e and 0x7d, are literal.
     device.incoming = frame({0x81, 0, 42, 30, 0, 42, 7, 0x31, 1, 0x7e});
-    requireByte(transport, 0x7e);
+    requireByte(inbox, 0x7e);
     BytesBuffer data{0x80, 0, 0, 0, 0, 0, 0, 0, 42, 50, 0, 42, 7, 0x31, 3, 95};
     data.insert(data.end(), 95, 0x7d);
     device.incoming = frame(data);
-    require(transport.getMessage()->getField<std::vector<uint8_t>>("data").size() == 95,
+    require(inbox.getMessage()->getField<std::vector<uint8_t>>("data").size() == 95,
             "Maximum RX64 frame and literal escape byte");
   }
 
@@ -145,40 +148,41 @@ namespace {
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     XbeeTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     for (size_t i = 0; i < 20000; ++i) append(device.incoming, {0x55, 0x7e, 0xff, 0xff});
     append(device.incoming, {0x7e, 0, 0});
     auto bad = rx16;
     bad.back() ^= 1;
     append(device.incoming, bad);
     append(device.incoming, rx64);
-    requireByte(transport);
+    requireByte(inbox);
 
     for (const BytesBuffer &malformed : {BytesBuffer{0x81}, BytesBuffer{0x80, 1, 2},
          BytesBuffer{0x89, 1}, BytesBuffer{0x89, 1, 0, 0}, BytesBuffer{0x8a}, BytesBuffer{0x88, 1, 'A'}}) {
       device.incoming = frame(malformed);
       append(device.incoming, rx16);
-      expectException<wrong_message_format>([&] { transport.hasMessage(); });
-      requireByte(transport);
+      expectException<wrong_message_format>([&] { inbox.hasMessage(); });
+      requireByte(inbox);
     }
     // Valid API checksum with an unknown PPRZLINK message, truncated fields, or trailing bytes.
     device.incoming = frame({0x81, 0, 42, 50, 0, 42, 7, 0x31, 200, 123});
     append(device.incoming, rx16);
-    expectException<no_such_message>([&] { transport.getMessage(); });
-    requireByte(transport);
+    expectException<no_such_message>([&] { inbox.getMessage(); });
+    requireByte(inbox);
     device.incoming = frame({0x81, 0, 42, 50, 0, 42, 7, 0x31, 2, 123});
     append(device.incoming, rx16);
-    expectException<std::out_of_range>([&] { transport.getMessage(); });
-    requireByte(transport);
+    expectException<std::out_of_range>([&] { inbox.getMessage(); });
+    requireByte(inbox);
     device.incoming = frame({0x81, 0, 42, 50, 0, 42, 7, 0x31, 1, 123, 10});
     append(device.incoming, rx16);
-    expectException<wrong_message_format>([&] { transport.getMessage(); });
-    requireByte(transport);
+    expectException<wrong_message_format>([&] { inbox.getMessage(); });
+    requireByte(inbox);
 
     // Discard a complete unhandled API indication, even if its bytes contain a valid RX frame.
     BytesBuffer unknown{0x82};
     append(unknown, rx16);
     device.incoming = frame(unknown);
-    require(!transport.hasMessage(), "Unknown API frame is skipped atomically");
+    require(!inbox.hasMessage(), "Unknown API frame is skipped atomically");
   }
 
   void testSanity(const MessageDictionary &dictionary)
@@ -186,6 +190,7 @@ namespace {
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     XbeeTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     transport.validateTransmitFrame(tx16);
     transport.validateTransmitFrame(tx64);
     require(device.outgoing.empty(), "Validation alone performs no I/O");
@@ -250,6 +255,7 @@ namespace {
     auto deviceOwner = std::make_unique<MemoryDevice>();
     auto &device = *deviceOwner;
     XbeeTransport transport(std::move(deviceOwner), dictionary);
+    ReceiptQueue inbox(transport);
     std::vector<XbeeTransport::RadioStatus> events;
     transport.setStatusCallback([&](const auto &event) { events.push_back(event); });
     // Digi's published transmit-status fixture (frame 0x52 delivered successfully).
@@ -258,7 +264,7 @@ namespace {
     append(device.incoming, frame({0x8a, 0}));
     append(device.incoming, frame({0x88, 6, 'M', 'Y', 0, 0x01, 0x00}));
     append(device.incoming, rx16);
-    requireByte(transport);
+    requireByte(inbox);
     require(events.size() == 4, "Radio status frames processed before next PPRZLINK message");
     require(std::get<XbeeTransport::TransmitStatus>(events[0]).frameId == 0x52 &&
             std::get<XbeeTransport::TransmitStatus>(events[0]).status == 0, "TX success event");
@@ -268,16 +274,17 @@ namespace {
     require(at.frameId == 6 && at.command == std::array<char, 2>{'M', 'Y'} && at.status == 0 &&
             at.value == BytesBuffer{1, 0}, "AT response fields");
     device.incoming = frame({0x89, 1, 2});
-    require(!transport.hasMessage() && events.size() == 5, "Statuses alone do not produce messages");
+    require(!inbox.hasMessage() && events.size() == 5, "Statuses alone do not produce messages");
 
     transport.setStatusCallback([](const auto &) { throw std::runtime_error("callback failure"); });
     device.incoming = frame({0x8a, 1});
     append(device.incoming, rx16);
-    expectException<std::runtime_error>([&] { transport.hasMessage(); });
-    requireByte(transport);
+    expectException<std::runtime_error>([&] { inbox.hasMessage(); });
+    transport.start();
+    requireByte(inbox);
     transport.setStatusCallback({});
     device.incoming = frame({0x8a, 1});
-    require(!transport.hasMessage(), "Callback is optional");
+    require(!inbox.hasMessage(), "Callback is optional");
   }
 }
 

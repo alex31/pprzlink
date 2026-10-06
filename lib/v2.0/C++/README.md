@@ -1,6 +1,6 @@
 # PprzLink C++
 
-The C++ library requires C++23, TinyXML2, Boost (Asio and Bimap) and CMake 3.20+.
+The C++ library requires C++23, TinyXML2, Boost 1.83+ (Asio and Bimap) and CMake 3.20+.
 Its compiled [LLNL/units](https://github.com/LLNL/units) dependency is built from
 the pinned `third_party/llnl_units` submodule and installed with the SDK.
 The default build also includes Ivy **3.18 or newer** with its native C++ wrapper
@@ -383,16 +383,14 @@ serialDevice->setBaudrate(pprzlink::BoostSerialPortDevice::Baudrate(57600));
 // Set any other serial options here, before transferring ownership.
 pprzlink::XbeeTransport transport(std::move(serialDevice), dictionary);
 transport.startInitialization(); // Autobaud -> 57600, MY=0x100, channel unchanged, AP=1
-while (!transport.pollInitialization()) {
-    context.run_for(std::chrono::milliseconds(10)); // Service the serial Device's I/O.
-}
 transport.setSanityChecksEnabled(true);
 message.setReceiverId(42);
-transport.sendMessage(message); // XBee 16-bit destination 42
-// For an independent radio address, preserve the PPRZLINK receiver ID:
-transport.sendMessageTo16(message, 0x1234);
-// Or use legacy 64-bit addressing:
-transport.sendMessageTo64(message, 0x0013a200405291abULL);
+transport.onReady([&] {
+    transport.sendMessage(message); // XBee destination 42, after initialization.
+    transport.sendMessageTo64(message, 0x0013a200405291abULL);
+});
+transport.start();
+context.run();
 ```
 
 The default radio destination is the PPRZLINK receiver ID. Receiver 255 means
@@ -412,9 +410,9 @@ The PAN must already match the intended setup. Initialization assumes the defaul
 command escape character `+` and a modem supporting UART command mode. Adjust the
 guard time if the modem's `GT` value was customized.
 
-`startInitialization(configuration)` begins a nonblocking AT sequence; call
-`pollInitialization()` regularly while servicing the Device's I/O loop.
-`hasMessage()`/`getMessage()` also advance initialization when called.
+`startInitialization(configuration)` prepares the AT sequence. `start()` activates
+reception, and input callbacks plus exact guard/reply deadlines advance it on Asio.
+`onReady()` observes successful completion. No periodic receive polling is needed.
 **Autobaud is enabled by default, with a target of 57600 baud.** Set
 `XbeeConfiguration::targetBaudrate` to another standard rate if needed.
 The initializer tries the target first, then 9600, 57600, 115200, 38400, 19200,
@@ -469,8 +467,8 @@ delivery. Frame IDs cycle through 1..255 (`getLastFrameId()`); applications must
 limit outstanding transmissions so IDs are not reused while awaiting replies.
 `setStatusCallback()` receives a `RadioStatus` variant containing `TransmitStatus`
 (`0x89`), `ModemStatus` (`0x8a`) or `AtCommandResponse` (`0x88`). The callback runs
-synchronously while `hasMessage()` or `getMessage()` processes incoming bytes.
-Continue polling even if only status frames are expected. A missing callback
+on the receive executor as status frames arrive, including when no message
+subscription matches. Run the supplied event loop to receive these statuses. A missing callback
 discards these events. Host-side retry scheduling, timeouts and pending-send
 tracking belong to the application; the modem's normal acknowledgement/retry
 mechanism remains enabled. A broadcast success status is not a delivery guarantee.
@@ -702,11 +700,36 @@ concepts, supported containers and numeric conversions.
 
 ## Transport, XML and serial-device contracts
 
-`tryReceive()` is the common receive operation for serial PPRZ, XBee, the PPRZ
-frame decoder and UDP. It returns `std::optional<ReceivedMessage>`: a value owns
-the message and its matching frame size/radio metadata/network source; `nullopt`
-means this poll produced no complete message. Errors still throw. The historical
-`hasMessage()`/`getMessage()` and last-metadata getters remain available.
+Reception uses receiver-owned `bind()` subscriptions on UDP, serial PPRZ,
+XBee and Ivy. `start()` enables reception; binary channels execute callbacks
+on the supplied Asio context, and Ivy on its native loop. The polling transport
+methods `tryReceive()`, `hasMessage()` and `getMessage()` have been removed.
+The standalone `PprzFrameDecoder` still exposes incremental reads without I/O.
+
+```cpp
+receiver.bind("GUIDE_ALTITUDE", [](const pprzlink::Message &message) {
+    std::cout << message.getFieldSI("altitude") << " m\n";
+});
+receiver.bind(pprzlink::ALL, {.senderId = 42},
+    [](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
+        // Optional metadata: info.udpPeer, info.xbee and info.frameSize.
+        (void)message; (void)info;
+    });
+receiver.start();
+context.run();
+```
+
+Filters combine with AND and cover message names, sender/destination/class/component,
+UDP source address/port, XBee source/RSSI, and application predicates. Unsupported
+filters fail at bind time. Bindings remain active without retaining a return value;
+retain the returned ID only for `unbind(id)`. Callbacks are serialized per receiver,
+borrow their arguments for the invocation, and can stop reception or send replies.
+Copy messages and metadata before retaining them or transferring them to another
+thread. `stop()` cancels only this receiver's reads and preserves its subscriptions.
+Application callback/predicate exceptions remain visible through the loop.
+`onError()` observes decoding, I/O and initialization failures; unhandled decoding
+failures are skipped and counted, while terminal failures stop reception and throw.
+See [the API contract](API_USAGE.md#réception-réactive--abonnements-et-filtres).
 
 `UdpTransport` takes an external Asio context and a `UdpOptions` value with a
 local endpoint and broadcast setting. Its dictionary and context must outlive
@@ -717,7 +740,7 @@ after a malformed frame. Incomplete frames are discarded at datagram boundaries.
 The binary transport searches iteratively for valid frames, keeps incomplete
 frames, and discards noise, invalid lengths and bad checksums. A checksum-valid
 frame with an unknown definition or malformed payload is consumed before the
-exception is reported; the next call can process the following frame. Fields
+decoding error is reported; reception then processes the following frame. Fields
 are decoded only inside that frame's payload, and a message becomes visible
 only when every field is decoded with no trailing bytes. Frames over 255 bytes
 and class/component IDs outside four bits are rejected before writing. String
@@ -762,13 +785,13 @@ transfer ownership with `std::move`; rebuild the library and dependent applicati
 are synchronous and complete. Run the supplied `io_context`, which must outlive
 the device. `startReception()` is idempotent; `stopReception()` cancels reception
 without closing the port. `readAll()` drains the received queue and also starts
-or resumes reception, preserving polling-transport usage. Completion handlers
+or resumes low-level reception for modem dialogues; transports use readiness notifications. Completion handlers
 use their own scratch buffer and retain state independently of the device.
 Destruction closes the port safely even when a callback is still pending.
 
 Port I/O and option calls are serialized internally. Finish external calls
 before destroying the device. Receive errors are reported by `availableBytes()`,
-`readAll()` or `startReception()` rather than thrown through the event loop;
+`readAll()` or `startReception()`; transports forward them through `onError()`;
 buffered bytes can be drained before the error is reported. Recreate the device
 after a terminal receive error. Option getters now return values read from the
 port. The old public completion handler and protected implementation members

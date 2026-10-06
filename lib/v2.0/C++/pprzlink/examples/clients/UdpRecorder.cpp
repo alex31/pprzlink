@@ -5,7 +5,7 @@
 #include <charconv>
 #include <chrono>
 #include <iostream>
-#include <thread>
+#include <boost/asio/steady_timer.hpp>
 
 int main(int argc, char **argv)
 {
@@ -26,18 +26,17 @@ int main(int argc, char **argv)
       {.local = {"127.0.0.1", port}});
     std::cout << "Listening on " << transport.localEndpoint().port << std::endl;
 
-    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    boost::asio::steady_timer timeout(context, 10s);
     int count = 0;
-    while (count < 3 && std::chrono::steady_clock::now() < deadline) {
-      if (auto received = transport.tryReceive()) {
-        std::cout << received->udpPeer->address << ':' << received->udpPeer->port
-                  << " [" << received->frameSize << " bytes] "
-                  << pprzlink::ivy_codec::serializeMessage(received->message) << std::endl;
-        ++count;
-      } else {
-        std::this_thread::sleep_for(5ms); // This small console program has no other work.
-      }
-    }
+    timeout.async_wait([&](const boost::system::error_code &error) { if (!error) transport.stop(); });
+    transport.bind(pprzlink::ALL, [&](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
+      std::cout << info.udpPeer->address << ':' << info.udpPeer->port
+                << " [" << info.frameSize << " bytes] "
+                << pprzlink::ivy_codec::serializeMessage(message) << std::endl;
+      if (++count == 3) { transport.stop(); timeout.cancel(); }
+    });
+    transport.start();
+    context.run();
     return count == 3 ? 0 : 1;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

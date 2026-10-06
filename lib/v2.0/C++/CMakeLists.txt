@@ -43,7 +43,7 @@ if(PPRZLINK_BUILD_DOCS)
 endif()
 
 find_package(tinyxml2 REQUIRED)
-find_package(Boost 1.69 CONFIG REQUIRED)
+find_package(Boost 1.83 CONFIG REQUIRED)
 if(PPRZLINK_USE_SYSTEM_UNITS)
     find_package(units 0.13 CONFIG REQUIRED)
 else()
@@ -65,7 +65,7 @@ set(CORE_SOURCES
     pprzlink/Message.cpp pprzlink/MessageDefinition.cpp pprzlink/MessageDictionary.cpp
     pprzlink/MessageField.cpp pprzlink/MessageFieldTypes.cpp
     pprzlink/UnitConversion.cpp pprzlink/UnitAliases.cpp
-    pprzlink/PprzTransport.cpp pprzlink/PprzFrameCodec.cpp
+    pprzlink/Receiver.cpp pprzlink/PprzTransport.cpp pprzlink/PprzFrameCodec.cpp
     pprzlink/XbeeTransport.cpp pprzlink/XbeeModem.cpp)
 set(IO_SOURCES pprzlink/BoostSerialPortDevice.cpp pprzlink/UdpTransport.cpp)
 set(PUBLIC_HEADERS
@@ -74,7 +74,7 @@ set(PUBLIC_HEADERS
     pprzlink/MessageDictionary.h pprzlink/MessageField.h pprzlink/MessageFieldTypes.h
     pprzlink/PprzTransport.h pprzlink/PprzFrameCodec.h pprzlink/TransportStatistics.h
     pprzlink/XbeeTransport.h pprzlink/XbeeModem.h pprzlink/Transport.h
-    pprzlink/ReceivedMessage.h pprzlink/BoostSerialPortDevice.h pprzlink/UdpTransport.h)
+    pprzlink/ReceivedMessage.h pprzlink/Receiver.h pprzlink/BoostSerialPortDevice.h pprzlink/UdpTransport.h)
 if(UNIX)
     list(APPEND IO_SOURCES pprzlink/PosixFileDevice.cpp)
     list(APPEND PUBLIC_HEADERS pprzlink/PosixFileDevice.h)
@@ -96,7 +96,7 @@ configure_pprzlink_target(pprzlink_core_objects)
 target_link_libraries(pprzlink_core_objects PRIVATE tinyxml2::tinyxml2 Boost::headers units::units)
 add_library(pprzlink_core STATIC $<TARGET_OBJECTS:pprzlink_core_objects>)
 configure_pprzlink_target(pprzlink_core)
-target_link_libraries(pprzlink_core PUBLIC tinyxml2::tinyxml2 Boost::headers PRIVATE units::units)
+target_link_libraries(pprzlink_core PUBLIC tinyxml2::tinyxml2 Boost::headers Threads::Threads PRIVATE units::units)
 add_library(pprzlink::core ALIAS pprzlink_core)
 
 add_library(pprzlink_io_objects OBJECT ${IO_SOURCES})
@@ -200,6 +200,8 @@ if(BUILD_TESTING)
         set_tests_properties(field_arguments_compile PROPERTIES TIMEOUT 60)
     endif()
     add_pprzlink_test(receive ReceiveTest.cpp)
+    add_pprzlink_test(receiver ReceiverTest.cpp)
+    target_link_libraries(receiver_test PRIVATE pprzlink::io)
     add_pprzlink_test(udp_transport UdpTransportTest.cpp)
     target_link_libraries(udp_transport_test PRIVATE pprzlink::io)
     if(PPRZLINK_WITH_IVY)

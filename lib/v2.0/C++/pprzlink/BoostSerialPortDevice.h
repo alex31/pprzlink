@@ -130,10 +130,16 @@ namespace pprzlink {
 
     /// Idempotent. A stopped reception can be restarted even before cancellation completes.
     /// @throws boost::system::system_error A receive error is already latched.
-    void startReception();
+    void startReception() override;
     /// Cancel reception, keeping the port open and the buffered bytes available.
     /// @throws boost::system::system_error Cancellation fails.
-    void stopReception();
+    void stopReception() override;
+    /// @brief Replace the readiness observer; it runs after releasing the device mutex.
+    /// @param[in] callback Observer notified of received bytes or deferred read errors.
+    void setReceiveCallback(ReceiveCallback callback) override;
+    /// @brief Return the serial port's caller-owned event-loop executor.
+    /// @return Executor serviced by the supplied io_context.
+    boost::asio::any_io_executor getExecutor() override;
 
   private:
     struct State;

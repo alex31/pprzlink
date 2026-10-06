@@ -2,6 +2,7 @@
 // Ground-side workshop peer: request altitude from aircraft 42 and read its reply.
 #include <pprzlink/BoostSerialPortDevice.h>
 #include <pprzlink/PprzTransport.h>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <iostream>
 #include <memory>
@@ -30,24 +31,27 @@ int main(int argc, char **argv)
     request.setSenderId(0);
     request.setReceiverId(42);
     std::cout << "Requester ready on " << argv[2] << std::endl;
-    const auto deadline = std::chrono::steady_clock::now() + 60s;
-    auto nextRequest = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() < deadline) {
-      if (std::chrono::steady_clock::now() >= nextRequest) {
-        transport.sendMessage(request);
-        nextRequest = std::chrono::steady_clock::now() + 500ms;
-      }
-      if (auto received = transport.tryReceive()) {
-        const auto &message = received->message;
-        if (message.getDefinition().getName() != "GUIDE_ALTITUDE" ||
-            message.getReceiverId() != 0 || std::get<uint8_t>(message.getSenderId()) != 42) continue;
+    bool received = false;
+    boost::asio::steady_timer timeout(context, 60s), retry(context);
+    timeout.async_wait([&](const boost::system::error_code &error) {
+      if (!error) { transport.stop(); retry.cancel(); }
+    });
+    std::function<void()> sendRequest = [&] {
+      transport.sendMessage(request);
+      retry.expires_after(500ms);
+      retry.async_wait([&](const boost::system::error_code &error) { if (!error) sendRequest(); });
+    };
+    transport.bind("GUIDE_ALTITUDE", {.senderId = 42, .receiverId = 0},
+      [&](const pprzlink::Message &message, const pprzlink::ReceiveInfo &info) {
         std::cout << "Aircraft 42: " << message.getFieldSI("altitude")
-                  << " m (" << received->frameSize << " received bytes)\n";
-        return 0;
-      }
-      context.restart();
-      context.run_for(10ms);
-    }
+                  << " m (" << info.frameSize << " received bytes)\n";
+        received = true;
+        transport.stop(); timeout.cancel(); retry.cancel();
+      });
+    transport.start();
+    sendRequest();
+    context.run();
+    if (received) return 0;
     throw std::runtime_error("No altitude reply within 60 seconds");
   } catch (const std::exception &error) {
     std::cerr << argv[0] << ": " << error.what() << '\n';

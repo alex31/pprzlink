@@ -1,28 +1,23 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 /**
  * @file PprzTransport.cpp
- * @brief Polling transport wrapper around the shared PPRZ frame codec.
+ * @brief Readiness-driven transport using the shared incremental PPRZ frame codec.
  * @ingroup transports
  *
- * Reception drains the device, caches at most one complete message and copies decoder statistics even when payload decoding throws.
+ * Input notifications drain completed bytes and distribute every complete message; decoder statistics are updated before callbacks and after malformed payloads.
  */
 
 #include "PprzTransport.h"
+#include <boost/asio/post.hpp>
 
 namespace pprzlink {
   PprzTransport::PprzTransport(std::unique_ptr<Device> device, const MessageDictionary &dictionary)
     : Transport(std::move(device), dictionary), decoder(dictionary) {}
 
-  bool PprzTransport::hasMessage()
+  PprzTransport::~PprzTransport()
   {
-    if (!currentMessage) decodeMessage();
-    return static_cast<bool>(currentMessage);
-  }
-
-  std::unique_ptr<Message> PprzTransport::getMessage()
-  {
-    if (!currentMessage) decodeMessage();
-    return std::move(currentMessage);
+    shutdown();
+    try { stop(); } catch (...) {}
   }
 
   size_t PprzTransport::sendMessage(const Message &message)
@@ -32,19 +27,28 @@ namespace pprzlink {
     return bytes.size();
   }
 
-  bool PprzTransport::decodeMessage()
+  void PprzTransport::receiveAvailable()
   {
-    decoder.pushBytes(device->readAll());
-    try {
-      if (auto message = decoder.nextMessage()) {
-        currentMessage = std::make_unique<Message>(std::move(*message));
+    decoder.pushBytes(receiveBytes());
+    while (isRunning()) {
+      std::optional<ReceivedMessage> received;
+      try { received = decoder.tryReceive(); }
+      catch (...) {
+        statistics = decoder.getStatistics();
+        reportError(std::current_exception(), ReceiveError::Kind::Decode);
+        continue;
       }
-    } catch (...) {
       statistics = decoder.getStatistics();
-      throw;
+      if (!received) break;
+      lastReceivedFrameSize = received->frameSize;
+      deliver(received->message, ReceiveInfo{received->frameSize, std::nullopt, std::nullopt});
     }
-    statistics = decoder.getStatistics();
-    lastReceivedFrameSize = decoder.getLastReceivedFrameSize();
-    return static_cast<bool>(currentMessage);
+  }
+
+  void PprzTransport::receptionStarted()
+  {
+    boost::asio::post(device->getExecutor(), guarded([this] {
+      try { receiveAvailable(); } catch (...) { stop(); throw; }
+    }));
   }
 }

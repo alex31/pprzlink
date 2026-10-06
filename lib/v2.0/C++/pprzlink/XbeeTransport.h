@@ -13,6 +13,7 @@
 
 #include <pprzlink/Transport.h>
 #include <pprzlink/XbeeModem.h>
+#include <boost/asio/steady_timer.hpp>
 #include <array>
 #include <functional>
 #include <optional>
@@ -77,12 +78,13 @@ namespace pprzlink {
     /// @throws std::invalid_argument Channel, timing or baud settings are invalid.
     void startInitialization(const XbeeConfiguration &configuration = {},
                              XbeeModem::TimePoint now = XbeeModem::Clock::now());
-    /// Call regularly while servicing the Device's I/O loop. No sleeping.
-    /// Throws on failure and keeps sends blocked until a successful restart.
-    /// @param[in] now Nondecreasing timestamp used for guards and reply deadlines.
-    /// @return True when ready, including the already-configured mode; false while initializing.
-    /// @throws std::exception AT dialogue, device I/O or baud detection fails.
-    bool pollInitialization(XbeeModem::TimePoint now = XbeeModem::Clock::now());
+    /// @brief Cancel protocol deadlines and disable callbacks before decoder destruction.
+    ~XbeeTransport() override;
+    /// @brief Cancel asynchronous reads and initialization deadlines.
+    void stop() override;
+    /// @brief Observe successful initialization on the receive executor.
+    /// @param[in] callback Application callback retained until replacement.
+    void onReady(std::function<void()> callback) { readyCallback = std::move(callback); }
     /// True also for the default constructor's already-configured-modem mode.
     /// @return Whether message transmission is currently permitted.
     bool isReady() const noexcept { return !initialization || initialization->isReady(); }
@@ -92,21 +94,6 @@ namespace pprzlink {
     {
       return initialization ? initialization->getBaudrateInfo() : std::nullopt;
     }
-
-    /// Process RX16/RX64 (or RX 0x90 in 868 mode) and status frames; retain incomplete frames.
-    /// A checksum-valid malformed message is consumed before its exception is raised.
-    /// Also progresses initialization when needed and delivers synchronous status callbacks.
-    /// @return True when a complete message is cached for consumption.
-    /// @throws std::exception Initialization, device I/O, payload or status callback fails.
-    bool hasMessage() override;
-    /// @brief Poll and consume a complete message without its optional radio metadata wrapper.
-    /// @return Owned message, or null while initializing or waiting for a complete frame.
-    /// @throws std::exception Initialization, I/O, decoding or status callback failure.
-    std::unique_ptr<Message> getMessage() override;
-    /// @brief Poll and consume a complete message with matching radio/frame metadata.
-    /// @return Owned result, or std::nullopt before a complete message is available.
-    /// @throws std::exception Initialization, I/O, decoding or status callback failure.
-    [[nodiscard]] std::optional<ReceivedMessage> tryReceive() override;
 
     /// Use the PPRZLINK receiver as radio destination (64-bit in 868 mode).
     /// Receiver 255 broadcasts to 0xffff in either mode.
@@ -158,13 +145,17 @@ namespace pprzlink {
     /// @return Borrowed optional radio metadata, updated by later receive calls.
     const std::optional<ReceiveInfo>& getLastReceiveInfo() const noexcept { return receiveInfo; }
 
-    /// Called synchronously by hasMessage()/getMessage(), never by a background thread.
+    /// Called on the receive executor as radio status frames arrive.
     /// The argument is borrowed for the call. Do not reenter reception or replace
     /// this callback from inside it. Exceptions propagate after consuming the frame.
     /// @param[in] callback Observer moved into the transport; an empty function disables notifications.
     void setStatusCallback(StatusCallback callback) { statusCallback = std::move(callback); }
 
   private:
+    void receiveAvailable() override;
+    void receptionStarted() override;
+    bool progressInitialization(XbeeModem::TimePoint now);
+    void scheduleInitialization();
     bool decodeMessage();
     void decodeFrame(std::span<const uint8_t> data);
     size_t sendTo(const Message &message, uint64_t destination, bool addressIs64Bit,
@@ -174,6 +165,10 @@ namespace pprzlink {
     std::unique_ptr<Message> currentMessage;
     std::optional<ReceiveInfo> receiveInfo;
     StatusCallback statusCallback;
+    std::exception_ptr statusFailure;
+    std::function<void()> readyCallback;
+    bool readyNotified = false;
+    std::shared_ptr<boost::asio::steady_timer> initializationTimer;
     std::optional<XbeeModem> initialization;
     uint8_t lastFrameId = 0;
     bool sanityChecksEnabled = false;

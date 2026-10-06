@@ -32,6 +32,7 @@
 #include <Ivy/ivy_thread.hpp>
 #include <pprzlink/Message.h>
 #include <pprzlink/MessageDictionary.h>
+#include <pprzlink/Receiver.h>
 #include <atomic>
 #include <functional>
 #include <map>
@@ -55,7 +56,7 @@ namespace pprzlink {
    * Callbacks run on the bus's event loop; synchronize shared application data.
    * Destroy the link after external callers/loops have finished, never from a callback.
    */
-  class IvyLink {
+  class IvyLink : public Receiver {
   public:
     /** Start a bus, optionally running its event loop on an owned thread.
      * With threadedIvy=false, call run() to service this bus.
@@ -151,9 +152,11 @@ namespace pprzlink {
     /// @throws std::logic_error This link already owns a loop thread.
     /// @throws std::system_error The native loop or a recorded callback error fails.
     void run();
+    /// @brief Activate Receiver::bind subscriptions on this bus's event loop.
+    void start() override;
     /// Request stop; safe inside callbacks. Destruction joins the owned thread.
     /// @throws std::system_error The native stop request fails.
-    void stop();
+    void stop() override;
     /// Borrow the bus for native API access and take_callback_error() inspection.
     /// Do not move/destroy it or run a second loop on it.
     /// @return Bus reference valid for this link's lifetime.
@@ -165,6 +168,7 @@ namespace pprzlink {
     std::mutex subscriptionsMutex;
     std::map<long, ivy::Subscription> subscriptions;
     std::atomic<long> nextBindId{1};
+    std::optional<ivy::Subscription> reactiveSubscription; ///< One native binding feeding the shared receiver registry.
     // Declared last: stop/join before destroying subscriptions or the bus.
     std::optional<ivy::LoopThread> loop;
 

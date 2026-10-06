@@ -183,7 +183,7 @@ namespace {
       std::unique_ptr<Transport> transport;
       if (i % 2 == 0) transport = std::make_unique<PprzTransport>(std::move(device), dictionary);
       else transport = std::make_unique<XbeeTransport>(std::move(device), dictionary);
-      (void)transport->hasMessage();
+      transport->start();
       writeAll(terminal.fd, {1, 2, 3});
     }
     loop.finish();
@@ -192,7 +192,7 @@ namespace {
     boost::asio::io_context deferred;
     {
       PprzTransport transport(std::make_unique<BoostSerialPortDevice>(deferred, terminal.name), dictionary);
-      (void)transport.hasMessage();
+      transport.start();
       writeAll(terminal.fd, {4, 5, 6});
     }
     deferred.run(); // Cancellation completion after device destruction must be safe.

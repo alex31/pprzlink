@@ -34,6 +34,15 @@ namespace pprzlink {
     bool hasRssi = true; ///< False for extended 868 receive frames, which carry no RSSI.
   };
 
+  /// Metadata borrowed alongside a decoded message during a receive callback.
+  /// Copy this value to retain it after the callback returns.
+  /// @ingroup transports
+  struct ReceiveInfo {
+    size_t frameSize = 0; ///< Complete transport frame bytes; zero when unavailable.
+    std::optional<XbeeReceiveInfo> xbee; ///< Radio source, RSSI and options when available.
+    std::optional<UdpEndpoint> udpPeer; ///< Actual source endpoint of a UDP datagram.
+  };
+
   /// Own a decoded message and the metadata from that same receive operation.
   /// Subsequent receives cannot overwrite this metadata.
   /// @ingroup transports

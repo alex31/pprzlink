@@ -6,13 +6,13 @@
 #include <charconv>
 #include <chrono>
 #include <csignal>
+#include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <iostream>
 #include <memory>
 #include <string_view>
 
 namespace {
-  volatile std::sig_atomic_t stopped = 0;
-  void stop(int) { stopped = 1; }
   constexpr auto usage = "Usage: pty_agent messages.xml serial-port agent-id (0..255)\n"
                          "Publishes and receives GUIDE_ALTITUDE until Ctrl+C.\n";
 }
@@ -49,27 +49,29 @@ int main(int argc, char **argv)
     altitude.setSenderId(id);
     altitude.setReceiverId(255); // Broadcast: neither port is assigned a ground/aircraft role.
     altitude.setFieldSI("altitude", metres);
-    std::signal(SIGINT, stop);
-    std::signal(SIGTERM, stop);
+    boost::asio::signal_set signals(context, SIGINT, SIGTERM);
+    boost::asio::steady_timer transmit(context);
+    signals.async_wait([&](const boost::system::error_code &error, int) {
+      if (!error) { transport.stop(); transmit.cancel(); }
+    });
+    transport.bind("GUIDE_ALTITUDE", {.where = [id](const pprzlink::Message &message) {
+      return std::get<uint8_t>(message.getSenderId()) != id &&
+             (message.getReceiverId() == id || message.getReceiverId() == 255);
+    }}, [&](const pprzlink::Message &message) {
+      const auto sender = std::get<uint8_t>(message.getSenderId());
+      std::cout << "Agent " << id << " RX from " << +sender << ": GUIDE_ALTITUDE "
+                << message.getFieldSI("altitude") << " m" << std::endl;
+    });
+    std::function<void()> send = [&] {
+      transport.sendMessage(altitude);
+      std::cout << "Agent " << id << " TX GUIDE_ALTITUDE " << metres << " m" << std::endl;
+      transmit.expires_after(1s);
+      transmit.async_wait([&](const boost::system::error_code &error) { if (!error) send(); });
+    };
+    transport.start();
     std::cout << "Agent " << id << " ready on " << argv[2] << std::endl;
-    auto nextSend = std::chrono::steady_clock::now();
-    while (!stopped) {
-      if (std::chrono::steady_clock::now() >= nextSend) {
-        transport.sendMessage(altitude);
-        std::cout << "Agent " << id << " TX GUIDE_ALTITUDE " << metres << " m" << std::endl;
-        nextSend = std::chrono::steady_clock::now() + 1s;
-      }
-      while (auto received = transport.tryReceive()) {
-        const auto &message = received->message;
-        const auto sender = std::get<uint8_t>(message.getSenderId());
-        if (message.getDefinition().getName() != "GUIDE_ALTITUDE" || sender == id ||
-            (message.getReceiverId() != id && message.getReceiverId() != 255)) continue;
-        std::cout << "Agent " << id << " RX from " << +sender << ": GUIDE_ALTITUDE "
-                  << message.getFieldSI("altitude") << " m" << std::endl;
-      }
-      context.restart();
-      context.run_for(10ms);
-    }
+    send();
+    context.run();
     return 0;
   } catch (const boost::system::system_error &error) {
     std::cerr << argv[0] << ": serial port '" << argv[2] << "': " << error.code().message() << '\n';
