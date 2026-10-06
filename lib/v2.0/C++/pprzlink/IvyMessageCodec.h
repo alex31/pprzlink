@@ -48,6 +48,8 @@ namespace pprzlink::ivy_codec {
   /// @throws wrong_message_format An XML base type cannot be represented.
   std::string messageRegexp(const MessageDefinition &definition);
   /// Sender, message name and fields in Ivy wire format.
+  /// Numeric text is locale-independent; finite floats use shortest round-trippable
+  /// representations, including scientific notation when shorter.
   /// @param[in] message Populated message; fields are emitted in XML order.
   /// @return Text containing sender, name and field values, without a newline.
   /// @throws std::exception A declared field has no value or a formatting operation fails.

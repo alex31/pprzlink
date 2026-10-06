@@ -356,19 +356,32 @@ le getter natif lorsque l'exactitude de ces entiers est nécessaire.
 
 Pour un tableau dont tous les éléments portent la même unité, l'entrée est un
 `std::span<const double>` (également construit depuis `std::array` ou `std::vector`)
-et la sortie un `std::vector<double>&` :
+et `getFieldArraySI()` renvoie directement un `std::vector<double>` :
 
 ```cpp
 // Avec un champ XML : <field name="position" type="int16[3]" unit="cm"/>
 std::array<double, 3> position_m{1.0, -2.0, 3.0};
 message.setFieldSI("position", position_m); // Stocke 100, -200, 300 en int16.
-std::vector<double> position_si;
-message.getFieldSI("position", position_si); // Restitue 1.0, -2.0, 3.0 m.
+const auto position_si = message.getFieldArraySI("position");
+// Restitue 1.0, -2.0, 3.0 m, dans un vector<double> de trois éléments.
 ```
 
-Ajoutez `<array>` et `<vector>` pour cet extrait. Les longueurs fixes restent
-vérifiées. Si un élément échoue, ni le champ entier ni le tableau de sortie
-d'une lecture ne sont remplacés.
+Ajoutez `<array>` pour cet extrait. Le vecteur retourné prend la taille du
+tableau stocké dans le message : vous n'avez pas à répéter le type ni la
+longueur du XML. Les lectures acceptent aussi un indice XML. Pour un scalaire,
+`getFieldSI("altitude")` renvoie un `double`.
+
+Les surcharges avec paramètre de sortie restent disponibles :
+
+```cpp
+std::vector<double> output;
+message.getFieldSI("position", output);
+```
+
+Ajoutez `<vector>` pour cet extrait. Si un élément échoue, ni le champ entier
+ni le tableau de sortie d'une lecture ne sont remplacés. Le champ
+`axes` du catalogue initial n'a pas d'unité ; ajoutez une unité correspondant
+à vos mesures dans le XML avant d'utiliser une lecture SI.
 
 L'exemple autonome [SIUnits.cpp](pprzlink/examples/clients/SIUnits.cpp) fournit
 ce XML et vérifie aussi l'encodage puis le décodage natif. Il se lance sans
@@ -461,7 +474,7 @@ L'erreur confirme que la bibliothèque ne tronque pas silencieusement ce nombre.
 
 ## 4. Manipuler des tableaux et du texte
 
-Ajoutez les en-têtes `<array>`, `<vector>` et `<string>`. Le message
+Ajoutez les en-têtes `<array>`, `<span>`, `<vector>`, `<string>` et `<string_view>`. Le message
 `GUIDE_SAMPLES` permet d'apprendre quatre formes de champs :
 
 ```cpp
@@ -472,11 +485,10 @@ samples.setField(
     "label", std::string("TEST"),
     "text", std::string("Mesure de départ"));
 
-const auto axes = samples.getField<std::array<float, 3>>("axes");
-const auto values = samples.getField<std::vector<std::uint16_t>>("samples");
-const auto labelBytes = samples.getField<std::vector<char>>("label");
-const std::string label(labelBytes.begin(), labelBytes.end());
-const auto description = samples.getField<std::string>("text");
+const auto axes = samples.getField<std::span<const float>>("axes");
+const auto values = samples.getField<std::span<const std::uint16_t>>("samples");
+const auto label = samples.getField<std::string_view>("label");
+const auto description = samples.getField<std::string_view>("text");
 
 std::cout << "Axe X : " << axes[0] << ", " << values.size() << " mesures\n";
 std::cout << label << " : " << description << '\n';
@@ -486,10 +498,28 @@ std::cout << label << " : " << description << '\n';
 variable ; un `std::vector<std::uint16_t>{}` représente un tableau vide.
 Les types des éléments doivent correspondre au XML lors de la lecture.
 
+`getField<std::span<const T>>()` emprunte sans copie le tableau stocké dans le
+message et renvoie sa longueur. Les getters acceptent les spans à taille
+dynamique, même pour un champ XML de taille fixe comme `float[3]`. Une copie
+reste disponible avec `getField<std::array<T, N>>()` ou
+`getField<std::vector<T>>()`. Les vues restent valides jusqu'au remplacement du
+champ, à la réaffectation ou à la destruction du message. Les lectures par index
+et avec paramètre de sortie acceptent également les spans. Les éléments sont
+constants : `std::span<T>` permettrait de les modifier, même si la vue est
+déclarée `const auto`, et n'est donc pas accepté par ces getters.
+
 `char[4]` représente quatre caractères, stockés comme un tableau. L'écriture
-depuis `std::string` est pratique, mais sa lecture reste une lecture de
-tableau de `char`. `string` est un champ texte distinct, relu avec
-`getField<std::string>()`.
+depuis `std::string` est pratique. Pour obtenir une copie du tableau, utilisez
+`getField<std::vector<char>>()`. `string` est un champ texte distinct, dont
+`getField<std::string>()` fournit une copie.
+
+`getField<std::string_view>()` permet de lire sans copier les caractères des
+champs `string`, `char[]` et `char[N]`. La vue emprunte le stockage du message :
+elle reste valide jusqu'au remplacement de ce champ, à la réaffectation ou à
+la destruction du message. Elle ne doit pas être obtenue depuis un message
+temporaire. La lecture par index et les surcharges avec paramètre de sortie
+acceptent aussi `std::string_view`. La taille est conservée intégralement,
+y compris les éventuels octets nuls ; aucun terminateur n'est nécessaire.
 
 Pour `char[4]`, la chaîne `"TEST"` fournit exactement quatre caractères : aucun
 terminateur nul n'est ajouté. `"OK"` est trop court et `"HELLO"` trop long.
@@ -575,6 +605,14 @@ std::cout << fromText.getFieldSI("altitude") << '\n';
 ```
 
 La ligne sérialisée commence par `42 GUIDE_ALTITUDE`, suivie de l'altitude.
+Pour une altitude de `123.6`, elle vaut `42 GUIDE_ALTITUDE 123.6` : les nombres
+transmis par Ivy ne sont pas complétés à six décimales. Le codec utilise
+`std::to_chars` sur le type stocké pour produire la représentation courte qui
+préserve exactement la valeur d'un `float` ou `double` fini à l'aller-retour.
+La notation scientifique peut apparaître pour des valeurs très petites ou
+très grandes ; les valeurs minuscules et le signe du zéro sont conservés.
+Ce format ne dépend ni de la locale ni de la précision de `std::cout`.
+
 `parseMessageBody()` reçoit séparément l'expéditeur et le corps du message,
 qui commence par le nom. Ces fonctions ne nécessitent pas Ivy installé : elles
 appartiennent à `core` et ne font aucune communication.

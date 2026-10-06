@@ -45,9 +45,9 @@ def udp_recorder(executable, dictionary):
             first.sendto(message(10) + message(20), destination)
             second.sendto(message(30), destination)
             output, errors = process.communicate(timeout=4)
-            expected = [f'127.0.0.1:{first.getsockname()[1]} [12 bytes] 42 CLIENT_ALTITUDE {value}.000000'
+            expected = [f'127.0.0.1:{first.getsockname()[1]} [12 bytes] 42 CLIENT_ALTITUDE {value}'
                         for value in [10, 20]]
-            expected.append(f'127.0.0.1:{second.getsockname()[1]} [12 bytes] 42 CLIENT_ALTITUDE 30.000000')
+            expected.append(f'127.0.0.1:{second.getsockname()[1]} [12 bytes] 42 CLIENT_ALTITUDE 30')
             require(process.returncode == 0 and sorted(output.splitlines()) == sorted(expected), output + errors)
     finally:
         if process.poll() is None:

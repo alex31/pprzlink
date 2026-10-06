@@ -32,7 +32,8 @@
 
 namespace pprzlink {
   /// Ivy payload: comma-separated arrays, quoted char arrays and empty/spaced strings.
-  /// int8/uint8 values are numeric; floating-point values use the stream precision.
+  /// Numbers use locale-independent to_chars formatting; finite floats use their
+  /// shortest round-trippable representation, independently of the stream precision.
   /// @ingroup codecs
   /// @param[in,out] stream Destination whose flags, locale and precision are preserved.
   /// @param[in] value Read-only XML-selected variant to format.

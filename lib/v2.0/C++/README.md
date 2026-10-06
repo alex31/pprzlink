@@ -148,6 +148,30 @@ build files under `OBJ_DIR/llnl_units`. `LLNL_UNITS_DIR` and
 `LLNL_UNITS_BUILD_DIR` can select other source/build locations. Make-based
 static library consumers also link `-lunits`; CMake targets carry this dependency.
 
+## Borrowed text and array views
+
+For populated fields, `getField<T>()` can borrow the message's existing storage
+without copying the text bytes or array elements. Include `<string_view>` for
+text views and `<span>` for array views:
+
+```cpp
+const auto label = samples.getField<std::string_view>("label");
+const auto axes = samples.getField<std::span<const float>>("axes");
+```
+
+`std::string_view` accepts XML `string`, `char[]` and `char[N]` fields. It keeps
+the complete byte length, including embedded NULs, and needs no terminator.
+`std::span<const T>` accepts array fields with the exact stored element type
+and returns their stored length. These getters support dynamic-extent spans.
+An incompatible field type throws `field_type_mismatch`.
+Named/indexed reads and output-parameter overloads support both view types.
+
+Views remain valid until the field is replaced or the message is assigned or
+destroyed; do not obtain a view from a temporary message. The span elements
+must be `const`: a `const std::span<T>` still allows element mutation, and
+mutable spans are not accepted by these getters. Use `std::string`,
+`std::vector<T>` or `std::array<T, N>` getters when an independent copy is needed.
+
 ## Explicit SI field access
 
 `getField`/`setField` use XML units and retain their existing type/range checks.
@@ -169,7 +193,10 @@ SI numbers are doubles: metres, seconds, radians (also for latitude/longitude),
 kelvins for absolute temperatures, and dimensionless ratios for percentages.
 Integer destinations always round to nearest, with ties away from zero. Range
 overflow throws without saturation or replacement. Numeric homogeneous arrays
-use `std::span<const double>` inputs and `std::vector<double>&` outputs.
+use `std::span<const double>` inputs. `getFieldArraySI()` returns an owned
+`std::vector<double>` with the stored array's length, by field name or XML index.
+`getFieldSI()` returns a scalar `double`; its existing output parameters
+also accept `double&` and `std::vector<double>&`.
 NaN/non-finite floating measurements retain their numeric meaning; integer
 writes reject them. A double cannot preserve all 64-bit integer values.
 
@@ -279,8 +306,8 @@ Library additions used by the agent:
 
 - `MessageDefinition::getLinkMode()` and `MessageField::getFormat()` expose XML
   routing/display metadata.
-- `serializeLegacyMessage()` honors XML display formats. The existing
-  `serializeMessage()` output is unchanged. `parseLegacyMessageBody()` accepts
+- `serializeLegacyMessage()` honors XML display formats. The standard
+  `serializeMessage()` uses compact, round-trippable numbers. `parseLegacyMessageBody()` accepts
   the legacy whitespace/quoted-field syntax while checking numeric ranges.
 - Signed/unsigned 64-bit scalar and array fields complement the existing types.
 - `PprzFrameDecoder` and `encodePprzFrame()` provide framing without device I/O.
@@ -640,6 +667,17 @@ stored values directly, without copying arrays or changing the field. Both use
 numeric int8/uint8 output and preserve the caller's stream flags. `operator<<`
 uses diagnostic formatting, including braces around non-character arrays;
 `Message::toString()` retains its existing diagnostic layout.
+
+Ivy numeric fields use `std::to_chars` on the stored type. Finite `float` and
+`double` values use their shortest round-trippable representation, so an Ivy
+altitude is sent as `123.6` instead of `123.600000`, and `125` instead of
+`125.000000`. Scientific notation is used when shorter; subnormal values and
+negative zero retain their original bits when parsed back into the same type.
+Formatting is independent of locale and stream precision. Numbers are written
+from a stack buffer directly to the message stream, without a temporary stream
+or string per field. Parsing borrows numeric tokens unless underscore
+normalization is needed. `serializeLegacyMessage()` retains the separate
+OCaml/XML formatting contract, including explicitly requested decimal precision.
 
 `<pprzlink/BinaryCodec.h>` contains little-endian encoding/decoding using
 `std::bit_cast` and bounded `std::span` input. Floating-point bit patterns and

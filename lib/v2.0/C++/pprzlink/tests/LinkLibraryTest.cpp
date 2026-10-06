@@ -35,7 +35,7 @@ namespace {
     message.setSenderId(uint8_t{42});
     message.addField("value", 1.25f);
     require(ivy_codec::serializeLegacyMessage(message) == "42 VALUE 1.25", "OCaml format");
-    require(ivy_codec::serializeMessage(message) == "42 VALUE 1.250000", "Existing codec stays unchanged");
+    require(ivy_codec::serializeMessage(message) == "42 VALUE 1.25", "Compact modern Ivy codec");
     auto parsed = ivy_codec::parseLegacyMessageBody(definition, "42", "VALUE   1.25  ");
     require(parsed.getField<float>("value") == 1.25f, "Legacy whitespace");
     tinyxml2::XMLDocument bad;

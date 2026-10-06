@@ -139,8 +139,10 @@ namespace pprzlink {
       return setField(std::forward<Remaining>(remaining)...);
     }
 
-    /// Exact-type reads. Missing definitions/values retain their distinct exceptions.
-    /// @tparam ValueType Exact scalar/string/array output type accepted by FieldValue.
+    /// Exact-type reads, or borrowed string_view/read-only span views of field storage.
+    /// Views remain valid until field replacement or message destruction/assignment.
+    /// Missing definitions/values retain their distinct exceptions.
+    /// @tparam ValueType Scalar/string/array output type or borrowed view accepted by FieldValue.
     /// @param[in] name Exact field name.
     /// @param[out] value Destination populated by the exact-read overload.
     /// @throws no_such_field The field is not declared.
@@ -153,7 +155,7 @@ namespace pprzlink {
     }
 
     /// @brief Read an exact-type value by XML field position.
-    /// @tparam ValueType Exact scalar/string/array output type.
+    /// @tparam ValueType Exact scalar/string/array output type, string_view or read-only span.
     /// @param[in] index Zero-based XML field position.
     /// @param[out] value Destination populated by the exact-read overload.
     /// @throws std::exception The position, value, type or array extent is invalid.
@@ -163,10 +165,11 @@ namespace pprzlink {
       getField(def.getField(index).getName(), value);
     }
 
-    /// Return a scalar, string or container instead of taking an output parameter.
-    /// @tparam ValueType Exact stored output type supported by FieldValue::getValue().
+    /// Return a value, or borrow field storage through a string_view or read-only span.
+    /// Views remain valid until field replacement or message destruction/assignment.
+    /// @tparam ValueType Output type supported by FieldValue::getValue().
     /// @param[in] name Exact field name.
-    /// @return An owned scalar, string or container.
+    /// @return An owned scalar/string/container, or a borrowed string_view/read-only span.
     /// @throws std::exception Unknown/unset field or exact-read type/extent mismatch.
     template<class ValueType>
     [[nodiscard]] ValueType getField(const std::string &name) const
@@ -174,10 +177,10 @@ namespace pprzlink {
       return fieldWithValue(name).getValue<ValueType>();
     }
 
-    /// @brief Return an exact-type value by XML position.
-    /// @tparam ValueType Exact stored output type.
+    /// @brief Return a value or borrowed view by XML position.
+    /// @tparam ValueType Exact stored output type, string_view or read-only span.
     /// @param[in] index Zero-based XML field position.
-    /// @return An owned scalar, string or container.
+    /// @return An owned value, or a view valid until field replacement or message destruction/assignment.
     /// @throws std::exception Invalid position, unset value or exact-read mismatch.
     template<class ValueType>
     [[nodiscard]] ValueType getField(size_t index) const
@@ -256,6 +259,23 @@ namespace pprzlink {
     /// @throws std::exception Same failures as the name-based SI getter.
     [[nodiscard]] double getFieldSI(size_t index) const
     { return getFieldSI(def.getField(index).getName()); }
+
+    /// Return all elements of a homogeneous numeric array in coherent SI units.
+    /// @param[in] name Exact XML field name.
+    /// @return An owned vector of SI doubles with the stored array's length.
+    /// @throws no_such_field The field is not declared.
+    /// @throws field_has_no_value The field has not been set.
+    /// @throws field_type_mismatch The field is scalar or contains text.
+    /// @throws field_unit_error SI conversion is unavailable, even for an empty array.
+    /// @throws field_conversion_error A finite element overflows the SI double.
+    [[nodiscard]] std::vector<double> getFieldArraySI(const std::string &name) const;
+    /// Return an SI array selected by XML position.
+    /// @param[in] index Zero-based XML field position.
+    /// @return An owned vector of SI doubles with the stored array's length.
+    /// @throws std::exception Same failures as the name-based SI array getter.
+    [[nodiscard]] std::vector<double> getFieldArraySI(size_t index) const
+    { return getFieldArraySI(def.getField(index).getName()); }
+
     /// Assign an SI scalar after a complete successful conversion.
     /// @param[in] name Exact XML field name.
     /// @param[out] value SI double, unchanged if reading fails.

@@ -96,16 +96,20 @@ Pour un tableau homogène :
 ```cpp
 std::array<double, 3> position_m{1.0, 2.0, 3.0};
 message.setFieldSI("position", position_m); // Champ numérique XML de trois éléments.
-std::vector<double> position_si;
-message.getFieldSI("position", position_si);
+const auto position_si = message.getFieldArraySI("position");
 ```
+
+`getFieldSI()` renvoie un `double` pour un scalaire ; `getFieldArraySI()` renvoie
+un `std::vector<double>` pour un tableau. Sa longueur correspond au tableau
+stocké dans le message, fixe ou variable selon le XML. Les lectures acceptent
+aussi un indice XML. Les paramètres de sortie `double&` et
+`std::vector<double>&` de `getFieldSI()` restent disponibles.
 
 Les surcharges scalaire et tableau conservent la forme et les contrôles de
 taille XML. Une conversion qui échoue ne remplace ni le champ, ni la destination
 d'une lecture. `setFieldSI()` renvoie `const Message&`, comme `setField()` ;
 on peut écrire `transport.sendMessage(message.setFieldSI("altitude", 123.5))`
-lorsque le message est complet. Les surcharges scalaires de `getFieldSI()`
-acceptent aussi un indice XML et un paramètre de sortie `double&`.
+lorsque le message est complet.
 
 LLNL/units est utilisé en interne, sans types LLNL dans les signatures publiques.
 Les règles éditables sont dans [UnitAliases.cpp](pprzlink/UnitAliases.cpp) :
@@ -245,6 +249,34 @@ avec le nom du champ, son type XML et le type demandé. Les anciens blocs `catch
 restent valables. `getFieldAs<T>()` ne parse pas les chaînes et ne convertit pas
 encore les tableaux ; leurs getters conservent les types d'éléments du XML.
 
+Pour lire du texte sans copier ses octets, utilisez une `std::string_view`
+(en-tête `<string_view>`) sur un champ `string`, `char[]` ou `char[N]` :
+
+```cpp
+const auto label = samples.getField<std::string_view>("label");
+```
+
+La vue emprunte le stockage du message jusqu'au remplacement du champ, à la
+réaffectation ou à la destruction du message ; n'utilisez pas un message
+temporaire. Les lectures par index et avec paramètre de sortie acceptent
+également ce type. La vue conserve la longueur complète et les octets nuls,
+sans exiger de terminateur. Les autres types de champs lèvent
+`field_type_mismatch`.
+
+Pour les tableaux, `std::span<const T>` (en-tête `<span>`) emprunte les éléments
+sans copie et prend la longueur du tableau stocké :
+
+```cpp
+const auto axes = samples.getField<std::span<const float>>("axes");
+```
+
+Le type `T` doit correspondre au type XML des éléments. Les getters acceptent
+les spans à taille dynamique. Les mêmes règles de durée de vie que
+pour `string_view` s'appliquent, ainsi que la lecture par index ou avec paramètre
+de sortie. Utilisez des éléments `const` : `const auto` seul ne rend pas les
+éléments d'un `std::span<T>` constants, et les spans modifiables ne sont pas
+acceptés par ces getters.
+
 ## Réception : un message et ses métadonnées
 
 ```cpp
@@ -279,6 +311,17 @@ local demandé était zéro. Les trames incomplètes sont abandonnées à la fro
 du datagramme pour éviter de mélanger deux émetteurs.
 
 ## Ivy : utiliser la propriété déjà fournie par Ivy C++
+
+`IvyLink::sendMessage()` transmet le texte produit par `serializeMessage()`.
+Les champs numériques utilisent `std::to_chars`, indépendamment de la locale
+et des réglages d'un flux. Les `float` et `double` finis sont transmis dans leur
+représentation courte conservant exactement leur valeur lors du décodage dans
+le même type : `123.6`, pas `123.600000`. La notation scientifique, les valeurs
+minuscules et le zéro négatif sont pris en charge pour les scalaires et tableaux.
+Le codec écrit directement depuis un tampon local sans flux temporaire par
+champ ; le parseur évite les copies pour les nombres sans séparateurs `_`.
+Le codec `serializeLegacyMessage()` garde son contrat distinct de formatage
+OCaml/XML, notamment les précisions explicitement demandées dans le XML.
 
 ```cpp
 auto subscription = link.subscribeMessage("CLIENT_ALTITUDE",

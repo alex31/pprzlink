@@ -7,11 +7,18 @@
 #include <iostream>
 #include <memory>
 #include <limits>
+#include <locale>
 #include <utility>
 
 using namespace pprzlink;
 
 namespace {
+  struct CommaPunctuation : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+    char do_thousands_sep() const override { return '_'; }
+    std::string do_grouping() const override { return "\3"; }
+  };
+
   class MemoryDevice : public Device {
   public:
     BytesBuffer incoming, outgoing;
@@ -146,10 +153,18 @@ namespace {
     require(ivy.str() == "-1,65", "Ivy numeric arrays");
     require(debug.str() == "{-1,65}", "Debug numeric arrays");
     std::ostringstream stream;
-    stream << std::scientific << std::setprecision(2);
+    stream.imbue(std::locale(std::locale::classic(), new CommaPunctuation));
+    stream << std::scientific << std::setprecision(1);
     const auto flags = stream.flags();
-    writeIvyField(stream, FieldValue(MessageField("f", "float"), 1.25f));
-    require(stream.str() == "1.25" && stream.flags() == flags, "Preserve stream flags/precision");
+    const auto locale = stream.getloc();
+    writeIvyField(stream, FieldValue(MessageField("f", "float"), 123.6f));
+    require(stream.str() == "123.6" && stream.flags() == flags && stream.precision() == 1 &&
+            stream.getloc() == locale, "Ivy numbers ignore stream formatting and preserve its state");
+    std::ostringstream integer;
+    integer.imbue(locale);
+    integer << std::hex << std::showbase;
+    writeIvyField(integer, FieldValue(MessageField("n", "uint32"), 12345));
+    require(integer.str() == "12345", "Ivy integers are decimal without locale grouping or stream prefixes");
     std::ostringstream words, empty, chars;
     writeIvyField(words, FieldValue(MessageField("text", "string"), "two words"));
     writeIvyField(empty, FieldValue(MessageField("text", "string"), ""));

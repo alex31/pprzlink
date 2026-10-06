@@ -40,6 +40,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -191,6 +193,25 @@ namespace pprzlink {
     template<std::same_as<std::string> T>
     void getValue(T &output) const { output = stored<T>(); }
 
+    /// Borrow the complete bytes of a scalar string or character array without copying.
+    /// The view remains valid until this FieldValue is replaced, assigned or destroyed.
+    /// @tparam T std::string_view destination type.
+    /// @param[out] output View assigned only after the stored type is checked.
+    /// @throws field_type_mismatch The field is neither a scalar string nor a character array.
+    template<std::same_as<std::string_view> T>
+    void getValue(T &output) const
+    {
+      if (const auto *text = std::get_if<std::string>(&value)) {
+        output = *text;
+      } else if (const auto *characters = std::get_if<std::vector<char>>(&value)) {
+        output = characters->empty() ? std::string_view{} :
+                                      std::string_view(characters->data(), characters->size());
+      } else {
+        throw field_type_mismatch(std::format("Field '{}' has type {}, requested string_view",
+                                              getName(), getType().toString()));
+      }
+    }
+
     /// @brief Copy array elements into a clear/push_back output container.
     /// @tparam Container Destination whose value_type exactly matches the stored elements.
     /// @param[out] output Container cleared after the type check, then populated in order.
@@ -220,9 +241,22 @@ namespace pprzlink {
       std::ranges::copy(elements, output.begin());
     }
 
-    /// Return a scalar, string or container using the same rules as the output overloads.
+    /// Borrow an array through a read-only span without copying its elements.
+    /// The view remains valid until this FieldValue is replaced, assigned or destroyed.
+    /// @tparam T Exact stored array element type.
+    /// @param[out] output View of the complete array, assigned only after the type check succeeds.
+    /// @throws field_type_mismatch The field is scalar or its element type differs from T.
+    template<class T>
+      requires (!std::is_volatile_v<T> && !std::same_as<T, bool>)
+    void getValue(std::span<const T> &output) const
+    {
+      const auto &elements = stored<std::vector<T>>();
+      output = std::span<const T>(elements);
+    }
+
+    /// Return a value or borrowed view using the same rules as the output overloads.
     /// @tparam T Default-constructible output type supported by getValue(T&).
-    /// @return An owned exact-type value or container.
+    /// @return An owned value, or a view valid until this value is replaced, assigned or destroyed.
     /// @throws std::exception The corresponding exact-read type or extent check fails.
     template<class T>
       requires detail::ReadableFieldValue<FieldValue, T>

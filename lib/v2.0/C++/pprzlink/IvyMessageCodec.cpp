@@ -29,6 +29,7 @@
 #include "TextCodec.h"
 #include <charconv>
 #include <cmath>
+#include <locale>
 #include <regex>
 #include <sstream>
 
@@ -65,10 +66,13 @@ namespace pprzlink::ivy_codec {
     template<class T>
     T parseNumber(std::string_view text)
     {
-      const std::string original(text);
-      std::string normalized(text);
-      std::erase(normalized, '_');
-      text = normalized;
+      const std::string_view original = text;
+      std::string normalized;
+      if (text.find('_') != std::string_view::npos) {
+        normalized.assign(text);
+        std::erase(normalized, '_');
+        text = normalized;
+      }
       if (text.starts_with('+')) {
         text.remove_prefix(1);
         if (text.starts_with('-')) {
@@ -90,7 +94,7 @@ namespace pprzlink::ivy_codec {
           (negative && std::is_signed_v<T> ? uint64_t{1} : uint64_t{0});
         if (text.empty() || error != std::errc{} || end != text.data() + text.size() ||
             magnitude > limit || (negative && !std::is_signed_v<T>))
-          throw wrong_message_format("Invalid or out-of-range number: " + original);
+          throw wrong_message_format("Invalid or out-of-range number: " + std::string(original));
         if (negative) {
           if (magnitude == limit) return std::numeric_limits<T>::min();
           return static_cast<T>(-static_cast<int64_t>(magnitude));
@@ -181,6 +185,7 @@ namespace pprzlink::ivy_codec {
   std::string serializeMessage(const Message &msg)
   {
     std::ostringstream stream;
+    stream.imbue(std::locale::classic());
     const auto &sender = msg.getSenderId();
     if (std::holds_alternative<std::string>(sender)) {
       stream << std::get<std::string>(sender);

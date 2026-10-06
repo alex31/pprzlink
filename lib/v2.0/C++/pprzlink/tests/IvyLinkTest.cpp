@@ -1,8 +1,10 @@
 #include <pprzlink/IvyLink.h>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -114,6 +116,37 @@ namespace {
     waitFor([&] { return aircraft == 1 && empty == 2 && singles == 1; }, "aircraft/empty/array messages");
     require(receiver.getBus().take_callback_error().has_value(), "Message callback error");
     std::cout << "XML field conversions, aircraft routing and round trips passed\n";
+  }
+
+  void testCompactNumbers(const MessageDictionary &dict, const std::string &domain)
+  {
+    std::atomic<bool> received{false};
+    const float altitude = 123.6f;
+    const double precise = 1.2345678901234567;
+    const std::vector<float> values{-0.f, std::numeric_limits<float>::denorm_min(),
+                                   std::numeric_limits<float>::max()};
+    const auto &definition = dict.getDefinition("COMPACT");
+    IvyLink receiver(dict, "compact-rx", domain, true);
+    receiver.BindMessage(definition, [&](std::string sender, Message msg) {
+      require(sender == "42", "Compact message sender");
+      require(std::bit_cast<uint32_t>(msg.getField<float>("f")) == std::bit_cast<uint32_t>(altitude),
+              "Float precision survives the real Ivy bus");
+      require(std::bit_cast<uint64_t>(msg.getField<double>("d")) == std::bit_cast<uint64_t>(precise),
+              "Double precision survives the real Ivy bus");
+      const auto decoded = msg.getField<std::span<const float>>("values");
+      require(decoded.size() == values.size(), "Compact array length on Ivy");
+      for (size_t i = 0; i < values.size(); ++i)
+        require(std::bit_cast<uint32_t>(decoded[i]) == std::bit_cast<uint32_t>(values[i]),
+                "Signed zero and extreme array values survive the real Ivy bus");
+      received = true;
+    });
+    IvyLink sender(dict, "compact-tx", domain, true);
+    waitBindings(sender, "compact-rx", 1);
+    Message outgoing(definition);
+    outgoing.setSenderId(42);
+    outgoing.setField("f", altitude, "d", precise, "values", values);
+    sender.sendMessage(outgoing);
+    waitFor([&] { return received.load(); }, "compact floating-point message round trip");
   }
 
   void testRequests(const MessageDictionary &dict, const std::string &domain)
@@ -322,6 +355,8 @@ int main()
       <message name="ANSWER_REQ" id="5"><field name="value" type="uint32"/></message>
       <message name="SINGLE" id="6"><field name="values" type="int8[]"/><field name="text" type="string"/></message>
       <message name="BYTE" id="7"><field name="value" type="uint8"/></message>
+      <message name="COMPACT" id="8"><field name="f" type="float"/>
+        <field name="d" type="double"/><field name="values" type="float[]"/></message>
     </msg_class></protocol>)") == tinyxml2::XML_SUCCESS, "Test dictionary XML");
     MessageDictionary dict(xml.RootElement());
     require(dict.getDefinition("VALUES").getName() == "VALUES", "Uppercase XML message name");
@@ -330,6 +365,7 @@ int main()
     const auto domainA = "127.255.255.255:" + std::to_string(port);
     const auto domainB = "127.255.255.255:" + std::to_string(port + 1);
     testMessages(dict, domainA);
+    testCompactNumbers(dict, domainA);
     testRequests(dict, domainA);
     testIsolation(dict, domainA, domainB);
     testLifecycleAndErrors(dict, domainA);

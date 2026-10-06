@@ -80,7 +80,7 @@ namespace pprzlink {
     const auto &value = fieldWithValue(name);
     const auto &field = value.getField();
     if (field.getType().isArray()) throw field_type_mismatch(
-      std::format("message '{}' field '{}': XML array requires an SI array output", def.getName(), name));
+      std::format("message '{}' field '{}': XML array requires getFieldArraySI()", def.getName(), name));
     return std::visit([&]<class Stored>(const Stored &raw) -> double {
       if constexpr (Arithmetic<Stored>) return field.toSI(raw);
       else throw field_type_mismatch(std::format("message '{}' field '{}': SI conversion requires a numeric field",
@@ -88,17 +88,17 @@ namespace pprzlink {
     }, value.getValue());
   }
 
-  void Message::getFieldSI(const std::string &name, std::vector<double> &values) const
+  std::vector<double> Message::getFieldArraySI(const std::string &name) const
   {
     const auto &value = fieldWithValue(name);
     const auto &field = value.getField();
     if (!field.getType().isArray()) throw field_type_mismatch(
-      std::format("message '{}' field '{}': XML scalar requires an SI scalar output", def.getName(), name));
+      std::format("message '{}' field '{}': XML scalar requires getFieldSI()", def.getName(), name));
     if (field.getType().getBaseType() == BaseType::STRING) throw field_type_mismatch(
       std::format("message '{}' field '{}': SI conversion requires numeric elements", def.getName(), name));
     if (!field.canConvertSI()) throw field_unit_error(std::format(
       "message '{}' field '{}' (XML unit '{}'): SI conversion is unavailable", def.getName(), name, field.getUnit()));
-    auto converted = std::visit([&]<class Stored>(const Stored &raw) -> std::vector<double> {
+    return std::visit([&]<class Stored>(const Stored &raw) -> std::vector<double> {
       if constexpr (requires { typename Stored::value_type; }) {
         if constexpr (Arithmetic<typename Stored::value_type>) {
           std::vector<double> result;
@@ -110,7 +110,11 @@ namespace pprzlink {
       throw field_type_mismatch(std::format("message '{}' field '{}': SI conversion requires numeric elements",
                                             def.getName(), name));
     }, value.getValue());
-    values = std::move(converted);
+  }
+
+  void Message::getFieldSI(const std::string &name, std::vector<double> &values) const
+  {
+    values = getFieldArraySI(name);
   }
 
   std::string Message::toString() const

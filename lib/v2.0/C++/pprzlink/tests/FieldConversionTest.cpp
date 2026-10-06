@@ -5,6 +5,8 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <span>
+#include <string_view>
 
 using namespace pprzlink;
 
@@ -27,6 +29,85 @@ namespace {
   static_assert(!CanSetFields<const char*, int, int, double>);
   static_assert(!CanSetFields<const char*, int, const char*, int, bool, float>);
   static_assert(!CanSetFields<const char*, int, const char*, int, const char*, float, int, double>);
+
+  void testStringViews()
+  {
+    tinyxml2::XMLDocument xml;
+    require(xml.Parse(R"(<message name="GUIDE_SAMPLES" id="1">
+      <field name="label" type="char[4]"/>
+      <field name="text" type="string"/>
+      <field name="empty" type="char[]"/>
+      <field name="number" type="uint8"/>
+      <field name="unset" type="char[]"/>
+    </message>)") == tinyxml2::XML_SUCCESS, "Text-view fixture parses");
+    Message samples(MessageDefinition(xml.RootElement(), 2));
+    const std::string text("text\0payload", 12);
+    samples.setField("label", "TEST", "text", text, "empty", std::vector<char>{}, "number", 42);
+
+    const auto label = samples.getField<std::string_view>("label");
+    require(label == "TEST" &&
+            label.data() == std::get<std::vector<char>>(samples.getField("label")).data(),
+            "Named message view borrows the existing fixed character array");
+    require(samples.getField<std::string_view>(size_t{0}).data() == label.data(),
+            "Indexed message view borrows the same character array");
+    const auto description = samples.getField<std::string_view>("text");
+    require(description == text &&
+            description.data() == std::get<std::string>(samples.getField("text")).data(),
+            "Message string view retains the full stored bytes without copying");
+    std::string_view output;
+    samples.getField("label", output);
+    require(output.data() == label.data() && output.size() == label.size(),
+            "Named output-parameter view borrows the same storage");
+    samples.getField(size_t{1}, output);
+    require(output.data() == description.data() && output.size() == description.size(),
+            "Indexed output-parameter view borrows string storage");
+    require(samples.getField<std::string_view>("empty").empty(), "Message supports an empty text view");
+    samples.setField("number", 43);
+    require(label == "TEST" && description == text, "Updating another field preserves existing text views");
+
+    const auto mismatch = expectException<field_type_mismatch>([&] {
+      (void)samples.getField<std::string_view>("number");
+    });
+    require(mismatch.find("number") != std::string::npos && mismatch.find("uint8") != std::string::npos &&
+            mismatch.find("string_view") != std::string::npos, "Text view type error identifies the field and types");
+    expectException<field_has_no_value>([&] { (void)samples.getField<std::string_view>("unset"); });
+    expectException<no_such_field>([&] { (void)samples.getField<std::string_view>("unknown"); });
+  }
+
+  void testArrayViews()
+  {
+    tinyxml2::XMLDocument xml;
+    require(xml.Parse(R"(<message name="ARRAYS" id="1">
+      <field name="axes" type="float[3]"/>
+      <field name="samples" type="uint16[]"/>
+      <field name="empty" type="float[]"/>
+    </message>)") == tinyxml2::XML_SUCCESS, "Array-view fixture parses");
+    Message samples(MessageDefinition(xml.RootElement(), 2));
+    samples.setField("axes", std::array<float, 3>{1.f, 2.f, 3.f},
+                     "samples", std::vector<uint16_t>{100, 200}, "empty", std::vector<float>{});
+    const auto axes = samples.getField<std::span<const float>>("axes");
+    require(axes.data() == std::get<std::vector<float>>(samples.getField("axes")).data() &&
+            axes.size() == 3 && axes[0] == 1.f && axes[2] == 3.f,
+            "Named span borrows the message's existing array storage");
+    const auto indexed = samples.getField<std::span<const float>>(size_t{0});
+    require(indexed.data() == axes.data() && indexed.size() == axes.size(),
+            "Indexed span borrows the same message storage");
+    std::span<const float> output;
+    samples.getField("axes", output);
+    require(output.data() == axes.data() && output.size() == axes.size(), "Named span output");
+    samples.getField(size_t{0}, output);
+    require(output.data() == axes.data() && output.size() == axes.size(), "Indexed span output");
+    const auto values = samples.getField<std::span<const uint16_t>>("samples");
+    require(values.size() == 2 && values[1] == 200 &&
+            values.data() == std::get<std::vector<uint16_t>>(samples.getField("samples")).data(),
+            "Dynamic array view preserves element type and stored length");
+    require(samples.getField<std::span<const float>>("empty").empty(), "Empty message span");
+    expectException<field_type_mismatch>([&] { (void)samples.getField<std::span<const double>>("axes"); });
+    samples.setField("samples", std::vector<uint16_t>{300});
+    require(axes[0] == 1.f && indexed[2] == 3.f, "Updating another field preserves the borrowed axes");
+    const auto updated = samples.getField<std::span<const uint16_t>>("samples");
+    require(updated.size() == 1 && updated[0] == 300, "A new span follows the current stored array length");
+  }
 
   void testMultipleFields()
   {
@@ -83,6 +164,8 @@ namespace {
 int main()
 {
   try {
+    testStringViews();
+    testArrayViews();
     testMultipleFields();
     const MessageField byte("aircraft", "uint8");
     for (int invalid : {-1, 256, 300}) {

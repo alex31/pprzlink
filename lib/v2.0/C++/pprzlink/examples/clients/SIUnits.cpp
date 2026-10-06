@@ -6,7 +6,6 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
-#include <vector>
 
 int main()
 {
@@ -41,8 +40,7 @@ int main()
     if (!received || received->getField<int32_t>("altitude") != 1235) {
       throw std::runtime_error("Native XML storage was not preserved");
     }
-    std::vector<double> position;
-    received->getFieldSI("position", position);
+    const auto position = received->getFieldArraySI("position");
     std::cout << "Decoded position:";
     for (double metres : position) std::cout << ' ' << metres;
     std::cout << " m\n";

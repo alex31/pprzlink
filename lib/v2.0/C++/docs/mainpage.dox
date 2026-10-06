@@ -33,7 +33,21 @@
  * to the XML type. Exact reads use the stored C++ type; numeric conversions
  * must be requested explicitly. Binary frames carry identifiers and values,
  * so both endpoints need compatible XML schemas and field order.
- * getFieldSI()/setFieldSI() request coherent SI conversions with double values.
+ * Ivy numeric fields use std::to_chars with locale-independent decimal text.
+ * Finite float/double values use their shortest round-trippable representation,
+ * without six-decimal padding. Scientific notation, subnormal values and signed
+ * zero preserve the stored value's bits. The legacy OCaml/XML serializer retains
+ * its separate display-format contract.
+ * `getField<std::string_view>()` borrows the bytes of a string or character-array
+ * field. `getField<std::span<const T>>()` borrows an array with its exact element
+ * type and returns its stored length; array views use dynamic-extent spans.
+ * Views copy no data and remain valid until field replacement
+ * or message assignment/destruction. Do not borrow from a temporary message.
+ * Span elements must be const; making the span object const does not protect
+ * mutable elements. Both views support named/indexed reads and output parameters.
+ * getFieldSI()/getFieldArraySI()/setFieldSI() request coherent SI conversions
+ * with double values. Scalar reads return double; array reads return an owned
+ * std::vector<double> whose length follows the stored XML array.
  * Integer SI writes round to nearest, with ties away from zero, and retain
  * the XML storage type. MessageField exposes original XML unit metadata and
  * the prepared SI unit; UnitAliases.cpp contains editable scoped conventions.

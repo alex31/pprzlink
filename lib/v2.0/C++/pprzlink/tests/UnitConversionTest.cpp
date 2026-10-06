@@ -259,6 +259,65 @@ namespace {
     close(received->getFieldSI("temperature"), 293.15);
   }
 
+  void testSIArrayReturningGetters()
+  {
+    const auto dict = dictionary(R"(
+      <field name="position" type="int16[3]" unit="cm"/>
+      <field name="samples" type="float[]" unit="cm"/>
+      <field name="scalar" type="int32" unit="mm"/>
+      <field name="unsupported" type="int16[]" unit="adc"/>
+      <field name="label" type="string"/>
+      <field name="unset" type="float[3]" unit="m"/>
+    )");
+    Message message(dict.getDefinition("UNITS"));
+    message.setField("position", std::array<int16_t, 3>{123, -235, 0});
+    message.setField("samples", std::vector<float>{100.0f, 200.0f, 300.0f});
+    message.setField("scalar", int32_t{1234});
+    message.setField("unsupported", std::vector<int16_t>{1, 2, 3});
+    message.setField("label", std::string("test"));
+
+    const auto position = message.getFieldArraySI("position");
+    require(position.size() == 3, "Returning SI arrays take their extent from the stored XML array");
+    close(position[0], 1.23); close(position[1], -2.35); close(position[2], 0.0);
+    require(message.getFieldArraySI(size_t{0}) == position,
+            "Returning SI arrays support both field names and indices");
+    std::vector<double> output;
+    message.getFieldSI(size_t{0}, output);
+    require(output == position, "Existing SI output parameters agree with returning reads");
+    output[0] = 42.0;
+    require(message.getFieldArraySI("position") == position, "Returning SI vectors own their elements");
+    close(message.getFieldSI("scalar"), 1.234);
+    close(message.getFieldSI(size_t{2}), message.getFieldSI("scalar"));
+
+    const auto samples = message.getFieldArraySI("samples");
+    require(samples == std::vector<double>({1.0, 2.0, 3.0}),
+            "Returning SI arrays also convert dynamic XML float arrays");
+    message.setField("samples", std::vector<float>{400.0f, 500.0f});
+    require(message.getFieldArraySI(size_t{1}) == std::vector<double>({4.0, 5.0}),
+            "Returning SI arrays follow changing dynamic lengths without a caller-supplied size");
+    output = {42.0};
+    expectException<field_unit_error>([&] { message.getFieldSI("unsupported", output); });
+    require(output == std::vector<double>{42.0}, "Unit failures preserve the existing vector output");
+    expectException<field_unit_error>([&] {
+      (void)message.getFieldArraySI("unsupported");
+    });
+    expectException<field_type_mismatch>([&] {
+      (void)message.getFieldArraySI("scalar");
+    });
+    expectException<field_type_mismatch>([&] { (void)message.getFieldSI("position"); });
+    expectException<field_type_mismatch>([&] { (void)message.getFieldArraySI("label"); });
+    expectException<field_has_no_value>([&] { (void)message.getFieldArraySI("unset"); });
+    expectException<no_such_field>([&] { (void)message.getFieldArraySI("absent"); });
+    expectException<no_such_field>([&] { (void)message.getFieldArraySI(size_t{99}); });
+
+    message.setField("samples", std::vector<float>{});
+    require(message.getFieldArraySI("samples").empty(), "Returning SI arrays handle empty dynamic fields");
+    message.setField("unsupported", std::vector<int16_t>{});
+    expectException<field_unit_error>([&] { (void)message.getFieldArraySI("unsupported"); });
+    require(message.getField<std::array<int16_t, 3>>("position") == std::array<int16_t, 3>{123, -235, 0},
+            "SI returning reads preserve the native XML value");
+  }
+
   void testRepositoryXml(const char *path)
   {
     const MessageDictionary dict{std::string(path)};
@@ -286,6 +345,7 @@ int main(int argc, char **argv)
     testUnitsAndAliases();
     testTypesRoundingAndFailures();
     testArraysAndWireCompatibility();
+    testSIArrayReturningGetters();
     if (argc > 1) testRepositoryXml(argv[1]);
     std::cout << "SI units, editable aliases, rounding, failures, native protocol bytes and repository XML passed\n";
   } catch (const std::exception &error) {

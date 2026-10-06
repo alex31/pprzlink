@@ -22,10 +22,12 @@
  * @brief Variant-aware formatting of scalar and array values.
  * @ingroup codecs
  *
- * A temporary stream preserves formatting state. Character arrays are quoted; numeric array braces are reserved for diagnostic output.
+ * Ivy numbers use locale-independent charconv formatting, with shortest round-trippable floating-point text. Diagnostic formatting uses a temporary stream to preserve caller state.
  */
 
 #include <pprzlink/TextCodec.h>
+#include <array>
+#include <charconv>
 #include <iomanip>
 
 namespace pprzlink {
@@ -38,6 +40,21 @@ namespace pprzlink {
       Debug ///< Diagnostic numeric/string arrays enclosed in braces.
     };
 
+    /// @brief Append an Ivy number without locale formatting or temporary allocations.
+    /// @tparam T Stored numeric type; floating-point values keep their original precision.
+    /// @param[in,out] stream Destination for the complete numeric token.
+    /// @param[in] value Number to render; finite floats use their shortest round-trippable form.
+    /// @throws std::runtime_error The fixed buffer cannot hold the rendered number.
+    template<class T>
+    void writeIvyNumber(std::ostream &stream, T value)
+    {
+      // 64 bytes cover shortest float/double text and all XML integer widths.
+      std::array<char, 64> buffer;
+      const auto [end, error] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+      if (error != std::errc{}) throw std::runtime_error("Cannot format Ivy number");
+      stream.write(buffer.data(), end - buffer.data());
+    }
+
     /// @brief Append one scalar or string using the selected text policy.
     /// @tparam T Stored scalar/string type.
     /// @param[in,out] stream Temporary formatting stream.
@@ -46,50 +63,62 @@ namespace pprzlink {
     template<class T>
     void writeElement(std::ostream &stream, const T &value, TextFormat format)
     {
-      if constexpr (std::same_as<T, int8_t> || std::same_as<T, uint8_t>) {
-        stream << static_cast<int>(value);
-      } else if constexpr (std::floating_point<T>) {
-        stream << std::fixed << value;
-      } else if constexpr (std::same_as<T, std::string>) {
-        if (format == TextFormat::Ivy && (value.empty() || value.find(' ') != std::string::npos)) {
-          stream << '"' << value << '"';
+      if constexpr (Arithmetic<T> && !std::same_as<T, char>) {
+        if (format == TextFormat::Ivy) {
+          writeIvyNumber(stream, value);
+        } else if constexpr (std::same_as<T, int8_t> || std::same_as<T, uint8_t>) {
+          stream << static_cast<int>(value);
+        } else if constexpr (std::floating_point<T>) {
+          stream << std::fixed << value;
         } else {
           stream << value;
         }
+      } else if constexpr (std::same_as<T, std::string>) {
+        const bool quoted = format == TextFormat::Ivy &&
+                            (value.empty() || value.find(' ') != std::string::npos);
+        if (quoted) stream.put('"');
+        stream.write(value.data(), value.size());
+        if (quoted) stream.put('"');
       } else {
-        stream << value;
+        stream.put(value);
       }
     }
 
-    /// @brief Format a variant into a temporary stream, then append its text.
+    /// @brief Append Ivy text directly; isolate diagnostic formatting in a temporary stream.
     /// @param[in,out] stream Destination whose formatting flags/locale/precision remain unchanged.
     /// @param[in] storage Read-only scalar or array alternative.
     /// @param[in] format Array punctuation and string quoting policy.
     /// @return The destination after appending the completed text.
     std::ostream &writeField(std::ostream &stream, const FieldValue::Storage &storage, TextFormat format)
     {
-      // Keep fixed-point formatting local instead of modifying the caller's stream.
+      const auto append = [&](std::ostream &text) {
+        std::visit([&]<class T>(const T &value) {
+          if constexpr (Arithmetic<T> || std::same_as<T, std::string>) {
+            writeElement(text, value, format);
+          } else if constexpr (std::same_as<T, std::vector<char>>) {
+            text.put('"');
+            if (!value.empty()) text.write(value.data(), value.size());
+            text.put('"');
+          } else {
+            if (format == TextFormat::Debug) text.put('{');
+            bool first = true;
+            for (const auto &element : value) {
+              if (!first) text.put(',');
+              first = false;
+              writeElement(text, element, format);
+            }
+            if (format == TextFormat::Debug) text.put('}');
+          }
+        }, storage);
+      };
+      if (format == TextFormat::Ivy) {
+        append(stream);
+        return stream;
+      }
       std::ostringstream text;
       text.imbue(stream.getloc());
       text.precision(stream.precision());
-      std::visit([&]<class T>(const T &value) {
-        if constexpr (Arithmetic<T> || std::same_as<T, std::string>) {
-          writeElement(text, value, format);
-        } else if constexpr (std::same_as<T, std::vector<char>>) {
-          text << '"';
-          for (char character : value) text << character;
-          text << '"';
-        } else {
-          if (format == TextFormat::Debug) text << '{';
-          bool first = true;
-          for (const auto &element : value) {
-            if (!first) text << ',';
-            first = false;
-            writeElement(text, element, format);
-          }
-          if (format == TextFormat::Debug) text << '}';
-        }
-      }, storage);
+      append(text);
       return stream << text.str();
     }
   }
