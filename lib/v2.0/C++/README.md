@@ -1,8 +1,7 @@
 # PprzLink C++
 
 The C++ library requires C++23, TinyXML2, Boost 1.83+ (Asio and Bimap) and CMake 3.20+.
-Its compiled [LLNL/units](https://github.com/LLNL/units) dependency is built from
-the pinned `third_party/llnl_units` submodule and installed with the SDK.
+Unit conversion uses an internal affine table and bounded SI-prefix resolution.
 The default build also includes Ivy **3.18 or newer** with its native C++ wrapper
 (`ivy-cpp`) and pkg-config. Set `PPRZLINK_WITH_IVY=OFF` to build without Ivy.
 Ubuntu 24.04 / GCC 13 is the minimum supported platform. The current sources
@@ -33,10 +32,11 @@ For example, `MessageField("altitude", "float")` describes a field, while its
 | --- | --- |
 | [`FieldType`](pprzlink/MessageFieldTypes.h) | XML scalar/array type, such as `float`, `int16[]` or `char[5]`. |
 | [`MessageField`](pprzlink/MessageField.h) | Field name, XML type/unit metadata and prepared explicit SI conversion, without a value. |
-| [`UnitAliases.cpp`](pprzlink/UnitAliases.cpp) | Editable Paparazzi-to-LLNL spellings/scales, including scoped rules and explicitly unsupported units. |
+| [`UnitAliases.cpp`](pprzlink/UnitAliases.cpp) | Editable XML-to-SI slopes/offsets, including scoped rules and explicitly unsupported units. |
 | [`MessageDefinition`](pprzlink/MessageDefinition.h) | Message name, class/message IDs and ordered field definitions. |
 | [`MessageDictionary`](pprzlink/MessageDictionary.h) | Load definitions with TinyXML2 and look them up by name or IDs. |
 | [`FieldValue`](pprzlink/FieldValue.h) | Field definition and actual scalar/array value in a `std::variant`. |
+| [`MemoryDevice`](pprzlink/MemoryDevice.h) | Asynchronous in-memory loopback and byte injection on a caller-owned Asio context. |
 | [`Message`](pprzlink/Message.h) | A copy of a definition, populated field values and sender/receiver addressing. |
 | [`IvyLink`](pprzlink/IvyLink.h) | Own an Ivy bus and manage subscriptions, sends and requests. |
 | [`PprzTransport`](pprzlink/PprzTransport.h) | Implement `Transport` with binary PprzLink v2 framing over an owned `Device`. |
@@ -79,20 +79,8 @@ CMake build with `-DPPRZLINK_BUILD_DOCS=ON`.
 
 ## Build
 
-Initialize the LLNL/units submodule from the pprzlink root. It is pinned to
-`e71a1e2d0838ea6b5efbf8ea4e28a642f68849fa` (0.14.0 sources), the revision used
-for the SI API checks:
-
-```sh
-git submodule update --init third_party/llnl_units
-```
-
-CMake builds the compiled string parser as a private static dependency, with
-PIC and C++14 confined to LLNL's targets. Its tests, converter, web server and
-Python bindings are disabled. No separate LLNL installation is needed, and
-the installed SDK includes its library, headers, CMake package and notices.
-For distribution packaging, `-DPPRZLINK_USE_SYSTEM_UNITS=ON` selects an installed
-LLNL/units package (0.13+) instead; add its prefix to `CMAKE_PREFIX_PATH` if needed.
+The conversion table is compiled directly into the library. No additional unit
+package or submodule initialization is required.
 
 From this directory:
 
@@ -143,10 +131,6 @@ a separate diagnostic tool.
 `make libpprzlink++` and `make install DESTDIR=/path/to/install` are also supported.
 Use the same `PKG_CONFIG_PATH`; `CXX`, `CPPFLAGS`, `CXXFLAGS`, `LDFLAGS`, and
 `OBJ_DIR` may be supplied to make. Both shared and static libraries are built.
-The Makefile also builds and installs LLNL from the submodule, keeping its
-build files under `OBJ_DIR/llnl_units`. `LLNL_UNITS_DIR` and
-`LLNL_UNITS_BUILD_DIR` can select other source/build locations. Make-based
-static library consumers also link `-lunits`; CMake targets carry this dependency.
 
 ## Borrowed text and array views
 
@@ -208,11 +192,21 @@ calibration codes, logarithmic levels and mixed-frame arrays remain readable
 through raw access; requesting SI conversion throws `field_unit_error`.
 Conversion never changes coordinate frames, altitude references or time epochs.
 
-Edit [UnitAliases.cpp](pprzlink/UnitAliases.cpp) to add a rule
-`{"XML spelling", "LLNL spelling", scale}` and rebuild. LLNL receives
-`XML_value * scale`; use an empty target to prohibit conversion. Optional
-message/field selectors disambiguate legacy spellings. LLNL types and its
-global registry are not exposed or modified by this API.
+Edit [UnitAliases.cpp](pprzlink/UnitAliases.cpp) to add an explicit rule
+`{"XML spelling", "canonical SI symbol", multiplier, offset}`. Conversion is
+`SI = XML * multiplier + offset`, with inverse `(SI - offset) / multiplier`.
+Optional message/field selectors disambiguate legacy spellings. An empty SI
+target recognizes an opaque protocol label but does not permit SI access.
+
+Exact rules precede one common SI prefix on registered prefix-eligible bases.
+Areas/volumes apply the prefix factor squared/cubed; arbitrary algebraic
+expressions and fixed-point encodings are not inferred. Unknown `unit` or
+`alt_unit` declarations throw `bad_message_file` at XML loading, including on
+string fields and unused alternative units. The error names the message,
+field, spelling and table to update. Known opaque labels remain available
+through native reads. Incompatible physical dimensions also fail at loading.
+The explicit XML coefficient multiplies the alternative rule's slope once;
+it does not scale the offset. See [the validation and size report](VALIDATION_AFFINE_UNITS.md).
 
 Existing client source can adopt SI calls field by field. Rebuild the library
 and its clients: adding schema metadata changes the C++ class layout, so old

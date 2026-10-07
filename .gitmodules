@@ -1,3 +1,0 @@
-[submodule "llnl_units"]
-	path = third_party/llnl_units
-	url = https://github.com/LLNL/units.git

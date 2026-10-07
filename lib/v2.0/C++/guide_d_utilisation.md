@@ -36,8 +36,7 @@ Le parcours est le suivant :
 ### Construire la bibliothèque
 
 La bibliothèque demande C++23, CMake 3.20 ou plus, TinyXML2 et Boost.
-LLNL/units est fourni comme sous-module et compilé avec pprzlink. La
-plateforme minimale prise en charge par cette branche est Ubuntu 24.04 avec
+Les conversions SI utilisent une table interne. La plateforme minimale prise en charge par cette branche est Ubuntu 24.04 avec
 GCC 13. Sous Ubuntu 24.04, les dépendances du début de ce guide s'installent
 avec :
 
@@ -51,8 +50,6 @@ racine du dépôt pprzlink** :
 ```sh
 export PPRZLINK_CPP="$PWD/lib/v2.0/C++"
 export PPRZLINK_ATELIER=/tmp/pprzlink-guide
-
-git submodule update --init third_party/llnl_units
 
 cmake -S "$PPRZLINK_CPP" -B "$PPRZLINK_ATELIER/build-lib" \
   -DCMAKE_CXX_COMPILER=g++-13 \
@@ -69,16 +66,8 @@ cd "$PPRZLINK_ATELIER/projet"
 ```
 
 Le répertoire `sdk` contient les en-têtes, bibliothèques et fichiers CMake
-installés, y compris LLNL/units et son parseur compilé. Le sous-module
-`third_party/llnl_units` est fixé à la révision `e71a1e2` (sources 0.14.0).
-La compilation et l'installation séparées de LLNL ne sont pas nécessaires.
-Un clone `--recurse-submodules` ou une mise à jour récursive depuis Paparazzi
-initialise également cette dépendance. Le `make` normal de Paparazzi le fait
-déjà via `libpprzlink.update` : `sw/ext/Makefile` exécute
-`git submodule update --init --recursive sw/ext/pprzlink`. La commande manuelle
-ci-dessus concerne la construction directe de pprzlink décrite dans cet atelier.
-Le README décrit l'option facultative
-`PPRZLINK_USE_SYSTEM_UNITS` pour utiliser un paquet LLNL déjà installé.
+installés. Les conversions d'unités sont compilées directement dans la
+bibliothèque ; aucune installation supplémentaire n'est nécessaire.
 Le répertoire `projet` accueillera votre programme. `/tmp` convient à cet
 atelier ; choisissez un autre emplacement si vous souhaitez le conserver.
 
@@ -395,34 +384,43 @@ Vous devez notamment voir `1235 mm = 1.235 m` et `20 Celsius = 293.15 K`.
 
 ### Modifier les conventions Paparazzi
 
-LLNL/units est utilisé dans la bibliothèque ; l'application ne manipule aucun
-type LLNL. La table de correspondance est séparée dans
-[UnitAliases.cpp](pprzlink/UnitAliases.cpp). Sa syntaxe est :
+La table de conversion est dans [UnitAliases.cpp](pprzlink/UnitAliases.cpp).
+Une règle décrit directement la pente et le décalage vers l'unité SI :
 
 ```cpp
-{"1e7deg", "deg", 1e-7},                   // Nombre XML * 10^-7 -> degrés LLNL.
-{"deg_celsius", "degC"},                  // Alias simple, facteur 1.
-{"C", "degC", 1.0, "ESC", "temperature"}, // Alias limité à ce message et ce champ.
-{"adc", ""},                              // Pas de conversion sans calibration.
+{"1e7deg", "rad", std::numbers::pi / (180.0 * 1e7)},
+{"deg_celsius", "K", 1.0, 273.15},
+{"C", "K", 1.0, 273.15, "ESC", "temperature"},
+{"adc", ""}, // Libellé reconnu ; conversion SI interdite sans calibration.
 ```
 
-Ajoutez ou modifiez une ligne, puis recompilez pprzlink. La conversion utilise
-`nombre_XML * facteur` avant d'appliquer LLNL, y compris pour les températures.
-Les sélecteurs message/champ sont facultatifs ; la règle la plus spécifique
-gagne, puis la première ligne en cas d'égalité. Aucune règle n'est enregistrée
-dans le registre global LLNL : les conversions préparées sont immuables.
+La conversion est `SI = nombre_XML * multiplicateur + offset`. Ajoutez une
+règle, puis recompilez pprzlink. Les sélecteurs message/champ sont facultatifs ;
+la règle la plus spécifique gagne, puis la première en cas d'égalité.
+Les conversions préparées sont immuables et partagées entre copies de définitions.
 
-Si le champ XML fournit `alt_unit` et `alt_unit_coef`, ce coefficient explicite
-décrit le passage du nombre brut à l'unité alternative et prend priorité sur
-le facteur de la table, même s'il est arrondi dans le XML. Il est appliqué une
-seule fois. Cette description permet de convertir certains champs à virgule
-fixe dont l'attribut `unit` est absent. Un coefficient sans unité ne suffit pas.
+Les préfixes SI usuels permettent d'anticiper des unités comme `km`, `µA`, `MHz`
+ou `mm/s^2` à partir des bases enregistrées. Les surfaces et volumes utilisent
+le facteur au carré/cube (`cm²`, `mm3`). Le résolveur accepte un seul préfixe et
+les formes composées connues ; il ne devine pas une expression algébrique ni
+un nouvel encodage à virgule fixe.
 
-Une conversion inconnue, interdite ou incohérente lève `field_unit_error` avec
-le message, le champ et le libellé XML. Cela concerne notamment les codes de
-commande, les capteurs sans calibration et `GROUND_REF.pos`, qui mélange
-degrés et mètres selon son repère. Les méthodes ne changent pas les repères,
-références d'altitude ou epochs temporelles.
+Si le XML fournit `alt_unit` et `alt_unit_coef`, ce coefficient explicite
+multiplie la pente de la règle alternative une seule fois ; l'offset n'est
+pas multiplié. Cette description suffit pour certains champs à virgule fixe
+sans attribut `unit`. Un coefficient sans unité ne suffit pas.
+
+Toute unité inconnue dans `unit` ou `alt_unit` provoque `bad_message_file`
+dès le chargement du catalogue, avant le démarrage des communications. Le
+message d'erreur indique le fichier, message, champ, libellé et la table à
+compléter. Il faut ajouter la règle ou corriger le XML avant de relancer.
+Les dimensions incohérentes sont aussi refusées au chargement.
+
+Un libellé connu mais sans conversion SI reste utilisable par les getters
+natifs ; une demande SI lève `field_unit_error`. Cela concerne notamment les
+commandes, capteurs sans calibration et `GROUND_REF.pos`, qui mélange degrés
+et mètres selon le repère. Les transformations de repères, références
+ d'altitude et epochs restent à la charge de l'application.
 
 ### Adopter l'API SI dans un programme existant
 
@@ -1423,56 +1421,16 @@ simulation. Deux approches sont possibles :
 - écrire une classe dérivée de `Device`, puis la confier à `PprzTransport`.
 
 La première approche laisse toute la gestion des I/O à votre programme.
-La seconde permet de réutiliser le transport existant. Voici un périphérique
-de bouclage en mémoire pour comprendre le contrat, sans réseau ni thread
-supplémentaire. Cet adaptateur de démonstration s’utilise sur un seul thread.
-Ajoutez `<pprzlink/PprzTransport.h>`, `<boost/asio/io_context.hpp>`,
-`<boost/asio/post.hpp>`, `<memory>` et `<utility>`, puis placez
-cette classe **avant `main()`** :
-
-```cpp
-class LoopbackDevice final : public pprzlink::Device {
-public:
-    explicit LoopbackDevice(boost::asio::io_context &context) : context(context) {}
-    ~LoopbackDevice() override { state->receiving = false; state->callback = {}; }
-    std::size_t availableBytes() override { return state->pending.size(); }
-    pprzlink::BytesBuffer readAll() override
-    { return std::exchange(state->pending, pprzlink::BytesBuffer{}); }
-    void setReceiveCallback(ReceiveCallback callback) override
-    { state->callback = std::move(callback); }
-    void startReception() override { state->receiving = true; notify(); }
-    void stopReception() override { state->receiving = false; }
-    boost::asio::any_io_executor getExecutor() override { return context.get_executor(); }
-    void writeBuffer(const pprzlink::BytesBuffer &bytes) override
-    { state->pending.insert(state->pending.end(), bytes.begin(), bytes.end()); notify(); }
-private:
-    struct State {
-        pprzlink::BytesBuffer pending;
-        ReceiveCallback callback;
-        bool receiving = false;
-    };
-    boost::asio::io_context &context;
-    std::shared_ptr<State> state = std::make_shared<State>();
-    void notify()
-    {
-        if (state->receiving && !state->pending.empty()) {
-            boost::asio::post(context, [state = state] {
-                if (state->receiving && state->callback && !state->pending.empty()) {
-                    auto callback = state->callback;
-                    callback();
-                }
-            });
-        }
-    }
-};
-```
-
-Dans le bloc `try`, après le remplissage de `altitude`, ajoutez :
+La seconde permet de réutiliser le transport existant. Pour un simple
+bouclage de démonstration, la bibliothèque fournit déjà `MemoryDevice`.
+Ajoutez `<pprzlink/MemoryDevice.h>`, `<pprzlink/PprzTransport.h>` et `<memory>`,
+puis placez dans le bloc `try`, après le remplissage de `altitude` :
 
 ```cpp
 boost::asio::io_context context;
-pprzlink::PprzTransport loopback(std::make_unique<LoopbackDevice>(context), dictionary);
-loopback.bind(pprzlink::ALL, [&](const pprzlink::Message &message) {
+pprzlink::PprzTransport loopback(
+    std::make_unique<pprzlink::MemoryDevice>(context), dictionary);
+loopback.bind("GUIDE_ALTITUDE", [&](const pprzlink::Message &message) {
     std::cout << "Bouclage : " << message.toString() << '\n';
     loopback.stop();
 });
@@ -1481,19 +1439,18 @@ loopback.sendMessage(altitude);
 context.run();
 ```
 
-Vous retrouvez votre propre message parce que ce périphérique renvoie en
-lecture tout ce qui lui est écrit. Il suffit de `pprzlink::core` pour cet
-exemple : aucune dépendance à un port série n'est nécessaire.
+Vous retrouvez votre message parce que les écritures en mémoire deviennent
+de l'entrée, annoncée sur le contexte Asio. Il suffit de `pprzlink::core`,
+sans socket ni port série. L'application n'a pas à gérer les fragments :
+la lambda reçoit uniquement un message complet. Pour un simulateur avancé,
+`MemoryDevice::feed()` peut injecter des octets dans le flux.
 
-Dans un adaptateur réel, `getExecutor()` donne le contexte de notification ;
-`startReception()` arme les lectures, `stopReception()` les annule, et
-`setReceiveCallback()` installe un observateur appelé hors des verrous d’I/O.
-Les buffers doivent survivre jusqu’à la fin des lectures annulées.
-`readAll()` consomme les octets actuellement
-disponibles et peut retourner un tableau vide. `writeBuffer()` doit écrire
-le tampon entier ou lever une exception ; une écriture partielle silencieuse
-ne respecte pas son contrat. Si le système sous-jacent autorise des écritures
-partielles, l'adaptateur doit les gérer.
+Un adaptateur réel implémente `getExecutor()`, `startReception()`,
+`stopReception()` et `setReceiveCallback()`. Ses notifications sont appelées
+hors des verrous d'I/O et les buffers survivent aux lectures annulées.
+`readAll()` consomme les octets disponibles ; `writeBuffer()` écrit le tampon
+entier ou lève une exception. `MemoryDevice` permet d'apprendre la réception
+sans avoir à écrire cette mécanique.
 
 Pour les fichiers ou FIFO sous Unix, la bibliothèque fournit déjà
 `PosixFileDevice`, dans le composant `io`. Pour changer la vitesse UART pendant

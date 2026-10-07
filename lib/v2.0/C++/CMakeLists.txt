@@ -8,7 +8,6 @@ option(PPRZLINK_WITH_IVY "Build the optional Ivy adapter" ON)
 option(PPRZLINK_BUILD_EXAMPLES "Build the public API examples" ON)
 option(PPRZLINK_BUILD_LINK "Build the OCaml-compatible ground link agent (Unix)" ${PPRZLINK_WITH_IVY})
 option(PPRZLINK_BUILD_DOCS "Add the Doxygen documentation target" OFF)
-option(PPRZLINK_USE_SYSTEM_UNITS "Use an installed LLNL/units package instead of the pinned submodule" OFF)
 
 if(PPRZLINK_BUILD_DOCS)
     find_package(Doxygen 1.9.8 REQUIRED)
@@ -44,12 +43,6 @@ endif()
 
 find_package(tinyxml2 REQUIRED)
 find_package(Boost 1.83 CONFIG REQUIRED)
-if(PPRZLINK_USE_SYSTEM_UNITS)
-    find_package(units 0.13 CONFIG REQUIRED)
-else()
-    include(cmake/BundledUnits.cmake)
-    pprzlink_add_bundled_units()
-endif()
 find_package(Threads REQUIRED)
 if(PPRZLINK_WITH_IVY)
     find_package(PkgConfig REQUIRED)
@@ -65,11 +58,11 @@ set(CORE_SOURCES
     pprzlink/Message.cpp pprzlink/MessageDefinition.cpp pprzlink/MessageDictionary.cpp
     pprzlink/MessageField.cpp pprzlink/MessageFieldTypes.cpp
     pprzlink/UnitConversion.cpp pprzlink/UnitAliases.cpp
-    pprzlink/Receiver.cpp pprzlink/PprzTransport.cpp pprzlink/PprzFrameCodec.cpp
+    pprzlink/Receiver.cpp pprzlink/MemoryDevice.cpp pprzlink/PprzTransport.cpp pprzlink/PprzFrameCodec.cpp
     pprzlink/XbeeTransport.cpp pprzlink/XbeeModem.cpp)
 set(IO_SOURCES pprzlink/BoostSerialPortDevice.cpp pprzlink/UdpTransport.cpp)
 set(PUBLIC_HEADERS
-    pprzlink/Device.h pprzlink/FieldValue.h pprzlink/BinaryCodec.h pprzlink/TextCodec.h
+    pprzlink/Device.h pprzlink/MemoryDevice.h pprzlink/FieldValue.h pprzlink/BinaryCodec.h pprzlink/TextCodec.h
     pprzlink/IvyMessageCodec.h pprzlink/Message.h pprzlink/MessageDefinition.h
     pprzlink/MessageDictionary.h pprzlink/MessageField.h pprzlink/MessageFieldTypes.h
     pprzlink/PprzTransport.h pprzlink/PprzFrameCodec.h pprzlink/TransportStatistics.h
@@ -93,10 +86,10 @@ endfunction()
 # shared/static libraries reuse those objects, without exporting object targets.
 add_library(pprzlink_core_objects OBJECT ${CORE_SOURCES})
 configure_pprzlink_target(pprzlink_core_objects)
-target_link_libraries(pprzlink_core_objects PRIVATE tinyxml2::tinyxml2 Boost::headers units::units)
+target_link_libraries(pprzlink_core_objects PRIVATE tinyxml2::tinyxml2 Boost::headers)
 add_library(pprzlink_core STATIC $<TARGET_OBJECTS:pprzlink_core_objects>)
 configure_pprzlink_target(pprzlink_core)
-target_link_libraries(pprzlink_core PUBLIC tinyxml2::tinyxml2 Boost::headers Threads::Threads PRIVATE units::units)
+target_link_libraries(pprzlink_core PUBLIC tinyxml2::tinyxml2 Boost::headers Threads::Threads)
 add_library(pprzlink::core ALIAS pprzlink_core)
 
 add_library(pprzlink_io_objects OBJECT ${IO_SOURCES})
@@ -127,7 +120,6 @@ add_library(pprzlink++_static STATIC ${LEGACY_OBJECTS})
 foreach(target pprzlink++ pprzlink++_static)
     configure_pprzlink_target(${target})
     target_link_libraries(${target} PUBLIC ${LEGACY_LIBRARIES})
-    target_link_libraries(${target} PRIVATE units::units)
 endforeach()
 
 set(PPRZLINK_CMAKE_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/pprzlink++/cmake")
@@ -199,6 +191,7 @@ if(BUILD_TESTING)
                  --include-dirs "$<TARGET_PROPERTY:field_conversion_test,INCLUDE_DIRECTORIES>")
         set_tests_properties(field_arguments_compile PROPERTIES TIMEOUT 60)
     endif()
+    add_pprzlink_test(memory_device MemoryDeviceTest.cpp)
     add_pprzlink_test(receive ReceiveTest.cpp)
     add_pprzlink_test(receiver ReceiverTest.cpp)
     target_link_libraries(receiver_test PRIVATE pprzlink::io)

@@ -36,7 +36,7 @@ namespace {
       <field name="alt_only" type="int32" alt_unit="m" alt_unit_coef="1e-3"/>
       <field name="orphan" type="int16[]" alt_unit_coef="1e-3"/>
       <field name="missing" type="float"/>
-      <field name="unknown" type="float" unit="not_a_unit"/>
+      <field name="opaque" type="float" unit="adc"/>
       <field name="position" type="float[3]" unit="SI (m or deg)"/>
     )xml");
     Message message(dict.getDefinition("UNITS"));
@@ -59,23 +59,72 @@ namespace {
     require(orphan.getAltUnitCoef() == 0.001 && !orphan.canConvertSI(),
             "Legacy coefficients without units remain readable and do not invent a physical unit");
     message.setField("orphan", std::vector<int16_t>{1, 2});
-    for (const char *name : {"missing", "unknown", "position"}) {
+    for (const char *name : {"missing", "opaque", "position"}) {
       const auto &field = message.getFieldDefinition(name);
-      require(!field.canConvertSI() && field.getSIUnit().empty(), "Unsupported metadata stays loadable");
+      require(!field.canConvertSI() && field.getSIUnit().empty(), "Known opaque metadata stays loadable");
     }
     message.setField("missing", 12.0f);
     expectException<field_unit_error>([&] { (void)message.getFieldSI("missing"); });
-    const auto error = expectException<field_unit_error>([&] { message.setFieldSI("unknown", 1.0); });
-    require(error.find("UNITS") != std::string::npos && error.find("unknown") != std::string::npos &&
-            error.find("not_a_unit") != std::string::npos, "Unit errors identify message, field and XML spelling");
+    const auto error = expectException<field_unit_error>([&] { message.setFieldSI("opaque", 1.0); });
+    require(error.find("UNITS") != std::string::npos && error.find("opaque") != std::string::npos &&
+            error.find("adc") != std::string::npos, "Unit errors identify message, field and XML spelling");
 
     for (const char *coefficient : {"", "0", "nan", "inf", "1x", "1e10000"}) {
       const auto field = std::format("<field name='x' type='float' alt_unit='m' alt_unit_coef='{}'/>", coefficient);
       expectException<bad_message_file>([&] { (void)dictionary(field.c_str()); });
     }
-    const auto contradictory = dictionary("<field name='x' type='float' unit='m' alt_unit='s' alt_unit_coef='2'/>");
-    require(!contradictory.getDefinition("UNITS").getField("x").canConvertSI(),
-            "Dimensionally inconsistent explicit alternative is not accepted");
+    expectException<bad_message_file>([&] {
+      (void)dictionary("<field name='x' type='float' unit='m' alt_unit='s' alt_unit_coef='2'/>");
+    });
+  }
+
+  void testStrictUnitsAndPrefixes()
+  {
+    for (const char *fields : {
+      "<field name='x' type='float' unit='not_a_unit'/>",
+      "<field name='x' type='string' unit='not_a_unit'/>",
+      "<field name='x' type='float' unit='m' alt_unit='not_a_unit'/>",
+      "<field name='x' type='float' alt_unit='not_a_unit' alt_unit_coef='1'/>",
+      "<field name='x' type='float' unit='kmm'/>",
+      "<field name='x' type='float' unit='mdegC'/>"}) {
+      const auto error = expectException<bad_message_file>([&] { (void)dictionary(fields); });
+      require(error.find("UNITS") != std::string::npos && error.find("x") != std::string::npos &&
+              error.find("UnitAliases.cpp") != std::string::npos,
+              "Unknown units fail at schema loading, including strings and unused alternative units");
+    }
+    const auto dict = dictionary(R"(
+      <field name="distance" type="double" unit="km"/>
+      <field name="current" type="double" unit="µA"/>
+      <field name="voltage" type="double" unit="uV"/>
+      <field name="frequency" type="double" unit="MHz"/>
+      <field name="acceleration" type="double" unit="mm/s^2"/>
+      <field name="area" type="double" unit="cm²"/>
+      <field name="volume" type="double" unit="mm3"/>
+      <field name="density" type="double" unit="mg/m^3"/>
+      <field name="temperature" type="double" alt_unit="degC" alt_unit_coef="0.1"/>
+    )");
+    Message message(dict.getDefinition("UNITS"));
+    for (const auto &[name, expected] : {std::pair{"distance", 1000.0}, {"current", 1e-6},
+      {"voltage", 1e-6}, {"frequency", 1e6}, {"acceleration", 1e-3},
+      {"area", 1e-4}, {"volume", 1e-9}, {"density", 1e-6}}) {
+      message.setField(name, 1.0);
+      close(message.getFieldSI(name), expected);
+      message.setFieldSI(name, expected);
+      close(message.getField<double>(name), 1.0);
+    }
+    require(message.getFieldDefinition("area").getSIUnit() == "m^2" &&
+            message.getFieldDefinition("volume").getSIUnit() == "m^3",
+            "Prefix exponents preserve area and volume dimensions");
+    message.setField("temperature", 200.0);
+    close(message.getFieldSI("temperature"), 293.15);
+    message.setFieldSI("temperature", 293.15);
+    close(message.getField<double>("temperature"), 200.0);
+    expectException<bad_message_file>([&] {
+      (void)dictionary("<field name='x' type='double' unit='kPa' alt_unit='m' alt_unit_coef='1'/>");
+    });
+    expectException<bad_message_file>([&] {
+      (void)dictionary("<field name='x' type='double' alt_unit='GPa' alt_unit_coef='1e300'/>");
+    });
   }
 
   void testUnitsAndAliases()
@@ -192,9 +241,9 @@ namespace {
     expectException<field_conversion_error>([&] { message.setFieldSI("real", std::numeric_limits<double>::max()); });
     message.setField("real", std::numeric_limits<float>::quiet_NaN());
     require(std::isnan(message.getFieldSI("real")), "A protocol NaN remains a missing/non-finite SI measurement");
-    const MessageField tiny("tiny", "float", {}, "1e-300m");
+    const MessageField tiny("tiny", "float", {}, "m", "m", 1e-300);
     expectException<field_conversion_error>([&] { (void)tiny.fromSI<float>(1e100); });
-    const MessageField huge("huge", "double", {}, "1e300m");
+    const MessageField huge("huge", "double", {}, "m", "m", 1e300);
     expectException<field_conversion_error>([&] { (void)huge.toSI(std::numeric_limits<double>::max()); });
   }
 
@@ -342,6 +391,7 @@ int main(int argc, char **argv)
 {
   try {
     testMetadata();
+    testStrictUnitsAndPrefixes();
     testUnitsAndAliases();
     testTypesRoundingAndFailures();
     testArraysAndWireCompatibility();

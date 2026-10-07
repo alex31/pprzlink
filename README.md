@@ -21,23 +21,12 @@ PPRZLINK libraries are available for the following programming languages:
 -   [Python](lib/v2.0/python)
 -   [Rust](https://github.com/paparazzi/pprzlink-rust)
 
-## C++ dependency submodule
+## C++ unit conversions
 
-The C++ library builds its pinned LLNL/units dependency from
-`third_party/llnl_units`. Initialize it from the pprzlink repository root:
-
-```sh
-git submodule update --init third_party/llnl_units
-```
-
-Alternatively clone pprzlink with `--recurse-submodules`. When pprzlink is
-itself a Paparazzi submodule, a recursive submodule update in Paparazzi also
-initializes this dependency. Paparazzi's normal `make` already performs that
-recursive update through `libpprzlink.update` and `sw/ext/Makefile`; a separate
-initialization command is only needed when building pprzlink directly.
-CMake and the C++ Makefile build LLNL/units
-automatically; the C++ SDK installation includes it. See the
-[C++ usage guide](lib/v2.0/C++/guide_d_utilisation.md) for build instructions.
+The C++ library uses an internal table of affine XML-to-SI conversions and a
+small resolver for common SI prefixes. Unit declarations are validated when
+loading the XML. See the [C++ usage guide](lib/v2.0/C++/guide_d_utilisation.md)
+for build instructions and the editable conversion rules.
 
 ## License
 

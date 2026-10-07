@@ -59,6 +59,7 @@ namespace pprzlink {
     /// @param[in] messageName Optional owning message name for aliases and conversion diagnostics.
     /// @throws bad_message_file The type declaration is invalid.
     /// @throws bad_message_file An explicit coefficient is non-finite or zero.
+    /// @throws bad_message_file A declared unit is unknown or incompatible with its alternative.
     MessageField(const std::string &name, const std::string &typeString,
                  std::string format = {}, std::string unit = {}, std::string altUnit = {},
                  std::optional<double> altUnitCoef = std::nullopt, std::string messageName = {});

@@ -111,33 +111,41 @@ d'une lecture. `setFieldSI()` renvoie `const Message&`, comme `setField()` ;
 on peut écrire `transport.sendMessage(message.setFieldSI("altitude", 123.5))`
 lorsque le message est complet.
 
-LLNL/units est utilisé en interne, sans types LLNL dans les signatures publiques.
 Les règles éditables sont dans [UnitAliases.cpp](pprzlink/UnitAliases.cpp) :
 
 ```cpp
-{"1e7deg", "deg", 1e-7},                  // XML -> LLNL : multiplier par 10^-7.
-{"deg_celsius", "degC"},                 // Alias simple, facteur implicite 1.
-{"C", "degC", 1.0, "ESC", "temperature"}, // Seulement ce message/champ.
-{"adc", ""},                             // Conversion interdite sans calibration.
+{"1e7deg", "rad", std::numbers::pi / (180.0 * 1e7)},
+{"deg_celsius", "K", 1.0, 273.15},
+{"C", "K", 1.0, 273.15, "ESC", "temperature"},
+{"adc", ""}, // Libellé connu, sans conversion SI faute de calibration.
 ```
 
-Les règles les plus spécifiques ont priorité ; à spécificité égale, la première
-ligne gagne. Le facteur s'applique au nombre avant la conversion LLNL, notamment
-avant le décalage Celsius/kelvin. Si le XML fournit `alt_unit` et un coefficient
-explicite, ce coefficient prend priorité sur le facteur de la règle, sans être
-appliqué deux fois. Un coefficient sans unité reste exposé mais ne suffit pas
-à autoriser une conversion. Recompilez la bibliothèque après modification des règles.
+`SI = XML * multiplicateur + offset` ; l'inverse soustrait l'offset avant de
+ diviser par le multiplicateur. Les règles les plus spécifiques ont priorité,
+puis la première en cas d'égalité. Un coefficient XML explicite multiplie
+uniquement la pente de l'unité alternative, sans être appliqué deux fois.
+Les contrôles de plage et arrondis du type XML restent inchangés.
 
-Une conversion indisponible lève `field_unit_error` avec le nom du message,
-du champ et l'unité XML. Les dépassements numériques lèvent
-`field_conversion_error`. Les NaN de mesures flottantes se propagent ; ils ne
-sont pas acceptés vers des entiers. Les repères, références d'altitude et epochs
-ne sont pas transformés. `GROUND_REF.pos`, dont les unités varient selon `frame`,
-reste à traiter dans le code applicatif.
+Le résolveur accepte les préfixes usuels `da`, `G`, `M`, `k`, `h`, `d`, `c`, `m`,
+`u`/`µ`/`μ`, `n`, `p` sur les bases marquées dans la table. Un seul préfixe est
+appliqué ; les formes composées doivent être enregistrées. `cm²` et `mm3`
+utilisent le facteur au carré et au cube. Les encodages comme `1e7deg` restent
+des règles explicites, afin de ne pas deviner le sens d'un nouveau codage.
 
-La construction de pprzlink compile LLNL/units depuis son sous-module épinglé
-et l'installation du SDK inclut cette dépendance. Les clients et `link++`
-utilisent ce même SDK, sans installation séparée de LLNL.
+Toute déclaration inconnue dans `unit` ou `alt_unit` lève `bad_message_file`
+dès le chargement XML, même si l'application ne lit pas ce champ en SI. Le
+diagnostic indique le fichier, message, champ, libellé et `UnitAliases.cpp`.
+Les incompatibilités de dimensions sont également refusées. Les libellés
+opaques explicitement reconnus (`adc`, `pprz`, `dB`, données binaires, etc.)
+peuvent être lus nativement mais une demande SI lève `field_unit_error`.
+Les anciens labels applicatifs `motor` et `foo` sont enregistrés comme opaques,
+sans inventer de grandeur physique.
+
+Les dépassements numériques lèvent `field_conversion_error`. Les NaN de mesures
+flottantes se propagent ; ils ne sont pas acceptés vers les entiers. Les repères,
+références d'altitude et epochs ne sont pas transformés. `GROUND_REF.pos`, dont
+les unités varient selon `frame`, reste à traiter dans le code applicatif.
+La conversion est intégrée directement dans la bibliothèque et dans son SDK.
 Leurs appels existants gardent leurs unités XML ; les lectures/écritures SI sont
 adoptables localement pour les champs dont `canConvertSI()` est vrai. Les
 identifiants et commandes sans unité physique passent par l'API native. Le relais
@@ -277,6 +285,31 @@ de sortie. Utilisez des éléments `const` : `const auto` seul ne rend pas les
 éléments d'un `std::span<T>` constants, et les spans modifiables ne sont pas
 acceptés par ces getters.
 
+## Bouclage en mémoire
+
+`MemoryDevice` évite un périphérique personnalisé pour les exemples sans matériel.
+Les écritures deviennent de l'entrée et les notifications sont postées sur Asio :
+
+```cpp
+#include <pprzlink/MemoryDevice.h>
+#include <pprzlink/PprzTransport.h>
+
+boost::asio::io_context context;
+pprzlink::PprzTransport receiver(std::make_unique<pprzlink::MemoryDevice>(context), dictionary);
+receiver.bind("GUIDE_ALTITUDE", [&](const pprzlink::Message &message) {
+    std::cout << message.toString() << '\n';
+    receiver.stop();
+});
+receiver.start();
+receiver.sendMessage(altitude);
+context.run();
+```
+
+`feed(span<const uint8_t>)` permet aussi d'injecter des octets ou fragments dans
+un simulateur. Cette mécanique n'est pas nécessaire au code métier : les bindings
+reçoivent des messages complets. Le contexte doit survivre au périphérique ; les
+callbacks sont exécutés hors du verrou de son tampon, sans thread supplémentaire.
+
 ## Réception réactive : abonnements et filtres
 
 `UdpTransport`, `PprzTransport`, `XbeeTransport` et `IvyLink` partagent `bind()`.
@@ -409,7 +442,7 @@ récepteur et les alimente depuis une souscription Ivy native.
 
 | Composant CMake | Contenu |
 | --- | --- |
-| `pprzlink::core` | XML, messages, conversions SI LLNL/units, codecs, framing PPRZ/XBee et interface abstraite Device. TinyXML2 et en-têtes Boost ; aucune dépendance Ivy. |
+| `pprzlink::core` | XML, messages, conversions SI affines, codecs, framing PPRZ/XBee et interface abstraite Device. TinyXML2 et en-têtes Boost ; aucune dépendance Ivy. |
 | `pprzlink::io` | Série Boost.Asio, fichiers POSIX et UDP ; dépend de `core` et des threads. |
 | `pprzlink::ivy` | IvyLink ; dépend de `core`, Ivy C++ et des threads. |
 

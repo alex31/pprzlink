@@ -56,10 +56,9 @@ namespace pprzlink {
     if (altUnitCoef && (!std::isfinite(*altUnitCoef) || *altUnitCoef == 0.0)) {
       throw bad_message_file("alt_unit_coef must be finite and nonzero");
     }
-    if (type.getBaseType() != BaseType::STRING) {
-      unitConversion = detail::prepareUnitConversion(this->unit, this->altUnit, altUnitCoef,
-                                                     this->messageName, name);
-    }
+    auto conversion = detail::prepareUnitConversion(this->unit, this->altUnit, altUnitCoef,
+                                                    this->messageName, name);
+    if (type.getBaseType() != BaseType::STRING) unitConversion = std::move(conversion);
   }
 
   const std::string &MessageField::getSIUnit() const noexcept
@@ -77,8 +76,7 @@ namespace pprzlink {
   {
     if (!unitConversion) throw field_unit_error(unitContext() + ": SI conversion is unavailable");
     const auto &conversion = *unitConversion;
-    const double converted = units::convert(value * conversion.xmlScale,
-                                            conversion.xmlUnit, conversion.siUnit);
+    const double converted = value * conversion.multiplier + conversion.offset;
     if (std::isfinite(value) && !std::isfinite(converted)) {
       throw field_conversion_error(unitContext() + ": value cannot be represented as an SI double");
     }
@@ -89,8 +87,7 @@ namespace pprzlink {
   {
     if (!unitConversion) throw field_unit_error(unitContext() + ": SI conversion is unavailable");
     const auto &conversion = *unitConversion;
-    const double converted = units::convert(value, conversion.siUnit,
-                                            conversion.xmlUnit) / conversion.xmlScale;
+    const double converted = (value - conversion.offset) / conversion.multiplier;
     if (std::isfinite(value) && !std::isfinite(converted)) {
       throw field_conversion_error(unitContext() + ": SI value exceeds the XML numeric range");
     }

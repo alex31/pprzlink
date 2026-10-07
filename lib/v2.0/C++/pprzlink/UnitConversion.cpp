@@ -1,33 +1,26 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 /**
  * @file UnitConversion.cpp
- * @brief Resolve editable aliases and explicit XML scales into coherent SI units.
+ * @brief Strict table resolution, bounded SI prefixes and affine metadata composition.
  * @ingroup internals
  *
- * LLNL is used without registering aliases globally. Metadata is resolved once;
- * message/schema copies share immutable results. Unknown units remain available
- * as XML metadata and do not prevent ordinary message decoding.
+ * No algebraic unit-expression parser is used. Compound spellings must be listed
+ * explicitly. Unknown declarations fail while XML schemas are loaded, before I/O.
  */
 #include "detail/UnitConversion.h"
+#include <pprzlink/exceptions/pprzlink_exception.h>
+#include <array>
 #include <cmath>
-#include <utility>
-#include <vector>
+#include <format>
 
 namespace pprzlink::detail {
   namespace {
-    /// A parsed spelling and a separate number scale (also valid for Celsius).
-    struct ResolvedUnit {
-      units::precise_unit unit = units::precise::invalid; ///< LLNL unit, or invalid.
-      double scale = 1.0; ///< XML number to LLNL number.
-      bool disabled = false; ///< A matching rule explicitly prohibits conversion.
-    };
-
-    /// Resolve scoped aliases before LLNL's parser; never change its global state.
-    /// @param[in] spelling Exact XML unit spelling.
-    /// @param[in] message Owning message name for optional rule selectors.
-    /// @param[in] field Field name for optional rule selectors.
-    /// @return Parsed unit/scale, or a disabled/invalid result.
-    ResolvedUnit resolve(std::string_view spelling, std::string_view message, std::string_view field)
+    /// @brief Find the most specifically scoped exact spelling.
+    /// @param[in] spelling Complete unit spelling to resolve.
+    /// @param[in] message Message name used by legacy scoped overrides.
+    /// @param[in] field Field name used by legacy scoped overrides.
+    /// @return Matching static rule, or null if unknown.
+    const UnitAlias *find(std::string_view spelling, std::string_view message, std::string_view field)
     {
       const UnitAlias *selected = nullptr;
       int specificity = -1;
@@ -37,31 +30,46 @@ namespace pprzlink::detail {
         const int rank = static_cast<int>(!alias.message.empty()) + static_cast<int>(!alias.field.empty());
         if (rank > specificity) { selected = &alias; specificity = rank; }
       }
-      if (selected) {
-        if (selected->llnl.empty()) return {units::precise::invalid, 1.0, true};
-        if (!std::isfinite(selected->scale) || selected->scale == 0.0) return {};
-        return {units::unit_from_string(std::string(selected->llnl), 0), selected->scale, false};
-      }
-      if (spelling.empty()) return {};
-      return {units::unit_from_string(std::string(spelling), 0), 1.0, false};
+      return selected;
     }
 
-    /// Prefer familiar SI symbols to an expanded product of base units.
-    /// @param[in] unit Coherent SI unit whose flags and scale are normalized.
-    /// @return A common SI symbol or LLNL's expanded base-unit representation.
-    std::string siSymbol(const units::precise_unit &unit)
+    /// @brief Resolve an exact rule or one usual SI prefix on a registered linear base.
+    /// @param[in] spelling Complete unit spelling; empty means unspecified.
+    /// @param[in] attribute XML attribute name used in diagnostics.
+    /// @param[in] message Owning message name.
+    /// @param[in] field Owning field name.
+    /// @return A recognized rule, or nullopt for an unspecified declaration.
+    /// @throws bad_message_file Unknown spelling or invalid conversion rule.
+    std::optional<UnitAlias> resolve(std::string_view spelling, std::string_view attribute,
+                                    std::string_view message, std::string_view field)
     {
-      static const auto common = [] {
-        std::vector<std::pair<std::string, units::precise_unit>> result;
-        for (const char *symbol : {"1", "m", "s", "kg", "A", "K", "mol", "cd", "rad",
-                                  "m/s", "m/s^2", "m/s^3", "rad/s", "rad/s^2", "Pa",
-                                  "V", "W", "J", "C", "T", "Hz", "N", "kg/m^3", "m^2", "m^3"}) {
-          result.emplace_back(symbol, units::unit_from_string(symbol, 0));
+      if (spelling.empty()) return std::nullopt;
+      std::optional<UnitAlias> result;
+      if (const auto *exact = find(spelling, message, field)) result = *exact;
+      else {
+        // Longest prefixes first; case and u/Greek micro spellings are significant.
+        static constexpr std::pair<std::string_view, double> prefixes[]{
+          {"da", 1e1}, {"G", 1e9}, {"M", 1e6}, {"k", 1e3},
+          {"h", 1e2}, {"d", 1e-1}, {"c", 1e-2}, {"m", 1e-3},
+          {"u", 1e-6}, {"µ", 1e-6}, {"μ", 1e-6}, {"n", 1e-9}, {"p", 1e-12},
+        };
+        for (const auto &[prefix, multiplier] : prefixes) {
+          if (!spelling.starts_with(prefix)) continue;
+          // Prefixes use global physical bases; a scoped C temperature is not mC.
+          const auto *base = find(spelling.substr(prefix.size()), {}, {});
+          if (!base || base->si.empty() || !base->prefixPower || base->offset != 0.0) continue;
+          result = *base;
+          for (unsigned int power = 0; power < base->prefixPower; ++power) result->multiplier *= multiplier;
+          break;
         }
-        return result;
-      }();
-      for (const auto &[symbol, candidate] : common) if (unit == candidate) return symbol;
-      return units::to_string(unit);
+      }
+      if (!result) throw bad_message_file(std::format(
+        "message '{}' field '{}': unknown {} unit '{}'; add its rule to UnitAliases.cpp",
+        message, field, attribute, spelling));
+      if (!std::isfinite(result->multiplier) || result->multiplier == 0.0 || !std::isfinite(result->offset))
+        throw bad_message_file(std::format("message '{}' field '{}': invalid affine rule for unit '{}'",
+                                           message, field, spelling));
+      return result;
     }
   }
 
@@ -69,26 +77,21 @@ namespace pprzlink::detail {
       std::string_view unit, std::string_view altUnit, std::optional<double> coefficient,
       std::string_view message, std::string_view field)
   {
-    auto resolved = resolve(unit, message, field);
-    if (resolved.disabled) return {};
+    auto resolved = resolve(unit, "unit", message, field);
+    const auto alternative = resolve(altUnit, "alt_unit", message, field);
+    if (resolved && alternative && !resolved->si.empty() && !alternative->si.empty() &&
+        resolved->si != alternative->si) throw bad_message_file(std::format(
+          "message '{}' field '{}': incompatible unit '{}' and alt_unit '{}' ({} versus {})",
+          message, field, unit, altUnit, resolved->si, alternative->si));
+    if (resolved && resolved->si.empty()) return {};
     if (coefficient) {
-      auto alternative = resolve(altUnit, message, field);
-      if (alternative.disabled || !units::is_valid(alternative.unit)) return {};
-      if (units::is_valid(resolved.unit) &&
-          !resolved.unit.base_units().has_same_base(alternative.unit.base_units())) return {};
+      if (!alternative || alternative->si.empty()) return {};
       resolved = alternative;
-      resolved.scale *= *coefficient;
+      resolved->multiplier *= *coefficient; // The intercept is not scaled by XML number metadata.
     }
-    if (!units::is_valid(resolved.unit) || !std::isfinite(resolved.scale) || resolved.scale == 0.0 ||
-        resolved.unit.is_equation() || resolved.unit.is_per_unit()) return {};
-
-    // Currency/data/count units have no physical SI basis in this API.
-    const auto base = resolved.unit.base_units();
-    if (base.currency() != 0 || base.count() != 0) return {};
-    auto si = units::precise_unit(base);
-    si.clear_flags(); // Celsius's flag belongs to the XML unit; the coherent unit is kelvin.
-    if (!std::isfinite(units::convert(1.0, resolved.unit, si)) ||
-        !std::isfinite(units::convert(1.0, si, resolved.unit))) return {};
-    return std::make_shared<const UnitConversion>(resolved.unit, si, resolved.scale, siSymbol(si));
+    if (!resolved || resolved->si.empty()) return {};
+    if (!std::isfinite(resolved->multiplier) || resolved->multiplier == 0.0)
+      throw bad_message_file(std::format("message '{}' field '{}': composed unit multiplier is invalid", message, field));
+    return std::make_shared<const UnitConversion>(resolved->multiplier, resolved->offset, std::string(resolved->si));
   }
 }

@@ -116,7 +116,7 @@ présentes partout. `WIND_INFO`, par exemple, documente les bits de son champ
 | `link="forwarded"` ou `"broadcasted"` | Exposé par `MessageDefinition::getLinkMode()` ; la politique reste dans `link++`. |
 | `format`, par exemple `"%.1f"` | Exposé par `MessageField::getFormat()` ; utilisé notamment par le formatage de compatibilité OCaml. |
 | `<description>` et texte explicatif d'un champ | Présents dans le fichier lorsqu'ils sont renseignés, mais non conservés dans les objets C++ actuels. |
-| `unit`, `alt_unit`, `alt_unit_coef` | Conservés dans `MessageField` et exposés par leurs getters. Les appels SI explicites convertissent les grandeurs via LLNL/units. |
+| `unit`, `alt_unit`, `alt_unit_coef` | Conservés dans `MessageField` et exposés par leurs getters. Les appels SI explicites convertissent les grandeurs par conversion affine. |
 | `values`, pour les libellés de valeurs | Non exposé comme une énumération C++ et non utilisé pour restreindre les valeurs du champ. |
 
 Ainsi, une interface graphique peut découvrir les noms, types, unités XML,
@@ -139,19 +139,19 @@ une sortie `vector<double>&`, validées entièrement avant remplacement.
 `MessageField::fromSI<T>()` et `toSI(T)` permettent une conversion isolée
 d'un scalaire ou d'un élément, avec le type numérique exact du XML.
 
-LLNL/units reste derrière des conversions immuables partagées par les copies
-de définitions. Les sources sont épinglées dans le sous-module
-`third_party/llnl_units`, compilé automatiquement par CMake ou Make. Le SDK
-installe aussi la bibliothèque LLNL et son paquet CMake ; l'option
-`PPRZLINK_USE_SYSTEM_UNITS` permet de sélectionner un paquet système.
-Sa dépendance compilée est privée ; les signatures publiques
-n'exposent aucun type LLNL. [UnitAliases.cpp](pprzlink/UnitAliases.cpp) contient
-une table éditable de libellés, facteurs et sélecteurs facultatifs message/champ,
-sans modifier le registre global LLNL. Un coefficient XML explicite avec une
-unité alternative a priorité sur le facteur d'alias ; cette description peut
-suffire même sans `unit`. Les coefficients sans unité et les conventions
-dépendantes d'une calibration ou d'un repère restent disponibles comme
-métadonnées, sans conversion SI. `field_unit_error` signale ces demandes.
+Les conversions affines immuables sont partagées par les copies de définitions.
+[UnitAliases.cpp](pprzlink/UnitAliases.cpp) décrit l'unité SI canonique, la pente,
+l'offset et les sélecteurs message/champ. Un résolveur borné reconnaît les
+préfixes usuels sur des bases explicitement marquées, avec le bon exposant
+pour surfaces/volumes. Les unités composites et encodages spéciaux sont des
+entrées explicites ; aucun parseur algébrique général n'est utilisé.
+
+Les déclarations inconnues ou dimensions contradictoires provoquent
+`bad_message_file` pendant le chargement XML, y compris sur les champs texte
+et unités alternatives inutilisées. Les libellés opaques connus restent
+accessibles nativement. Un coefficient XML explicite multiplie la pente de
+l'alternative, sans toucher à son offset ; les conversions SI indisponibles
+lèvent `field_unit_error` à l'accès.
 
 Les codecs et le relais `link++` échangent toujours les types/valeurs XML.
 La conversion d'unité ne transforme ni repère, ni référence d'altitude, ni
@@ -391,6 +391,8 @@ transport.start();
 context.run();
 ```
 
+`MemoryDevice` fournit le même flux événementiel en mémoire : ses écritures
+sont bouclées en entrée et `feed()` peut injecter des octets pour les simulations.
 Le callback de lecture alimente le décodeur, puis les abonnements correspondants.
 UDP utilise `async_receive_from()` ; les flux série et POSIX notifient le transport
 après avoir reçu les octets. Les callbacks applicatifs s'exécutent hors des verrous
@@ -570,7 +572,7 @@ callback Ivy suivent le mécanisme du bus natif, accessible par `getBus()` ;
 
 | Cible CMake | Contenu et usage |
 | --- | --- |
-| `pprzlink::core` | Dictionnaire, messages, conversions SI LLNL/units, codecs, abstractions et transports sur `Device`. Permet le décodage hors ligne ou l'intégration à ses propres I/O, sans bus Ivy. |
+| `pprzlink::core` | Dictionnaire, messages, conversions SI affines, codecs, abstractions et transports sur `Device`. Permet le décodage hors ligne ou l'intégration à ses propres I/O, sans bus Ivy. |
 | `pprzlink::io` | Ajoute série Boost.Asio, UDP et périphérique POSIX ; dépend de `core`. |
 | `pprzlink::ivy` | Ajoute `IvyLink` et la dépendance Ivy native ; dépend de `core`. |
 | `pprzlink++`, `pprzlink++_static` | Cibles historiques regroupant les composants construits. |
