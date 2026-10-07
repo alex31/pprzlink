@@ -538,56 +538,46 @@ erreur de longueur à l'écriture, avant toute communication.
 
 Nous avons jusqu'ici manipulé des objets C++. Pour les transporter, il faut
 en faire des octets. Un **codec** réalise cette conversion ; un **transport**
-ajoutera les entrées/sorties à l'étape suivante.
+l'associe à un canal d'entrée/sortie. Pour essayer sans réseau ni matériel,
+`MemoryDevice` reboucle les octets envoyés vers la réception.
 
-Ajoutez `<pprzlink/PprzFrameCodec.h>`, `<span>` et `<stdexcept>`, puis cet extrait
-au programme de l'étape 2 :
+Ajoutez `<pprzlink/MemoryDevice.h>`, `<pprzlink/PprzTransport.h>`,
+`<boost/asio/io_context.hpp>` et `<memory>`, puis cet extrait au programme
+de l'étape 2, avant `return 0` :
 
 ```cpp
 altitude.setSenderId(42);
 altitude.setReceiverId(0);
 
-const auto frame = pprzlink::encodePprzFrame(altitude);
-std::cout << "Trame complète : " << frame.size() << " octets\n";
+boost::asio::io_context context;
+pprzlink::PprzTransport loopback(
+    std::make_unique<pprzlink::MemoryDevice>(context), dictionary);
+loopback.bind("GUIDE_ALTITUDE", [&](const pprzlink::Message &message) {
+    std::cout << "Altitude décodée : "
+              << message.getFieldSI("altitude") << " m\n";
+    loopback.stop();
+});
 
-pprzlink::PprzFrameDecoder decoder(dictionary);
-const std::span<const std::uint8_t> bytes(frame);
-
-decoder.pushBytes(bytes.first(3));
-if (decoder.tryReceive()) {
-    throw std::runtime_error("Une trame partielle ne doit pas être reçue");
-}
-
-decoder.pushBytes(bytes.subspan(3));
-auto received = decoder.tryReceive();
-if (!received) {
-    throw std::runtime_error("Le message complet était attendu");
-}
-
-std::cout << "Altitude décodée : "
-          << received->message.getFieldSI("altitude") << " m\n";
-std::cout << "Taille reçue : " << received->frameSize << " octets\n";
+loopback.start();
+const auto frameSize = loopback.sendMessage(altitude);
+std::cout << "Trame complète : " << frameSize << " octets\n";
+context.run();
 ```
 
 Vous devez retrouver `123.5` et une taille de **12 octets** : quatre octets
 de champ `float`, quatre d'en-tête PPRZLINK v2 et quatre d'enveloppe PPRZ.
-`altitude.getByteSize()` ne compte que les champs ; `frame.size()` compte
+`altitude.getByteSize()` ne compte que les champs ; `frameSize` compte
 la trame complète.
 
-L'arrivée en deux morceaux reproduit une situation courante sur un port série.
-Le décodeur garde les octets incomplets jusqu'à ce qu'il puisse reconstruire
-un message entier.
+`bind()` associe le nom du message à une lambda. `start()` active la réception,
+puis `sendMessage()` encode le message et renvoie le nombre d'octets écrits.
+`context.run()` traite les événements Asio sur le thread appelant : c'est
+pendant cet appel que la lambda reçoit le message décodé. Elle arrête le
+transport avec `stop()`, puis `run()` rend la main.
 
-`tryReceive()` renvoie un `std::optional<ReceivedMessage>` :
-
-- sans valeur, aucun message complet n'a été produit pendant cet appel ;
-- avec une valeur, `message` contient tous les champs décodés et `frameSize`
-  indique la taille de la trame correspondante.
-
-Un résultat vide n'est donc ni une fin de fichier ni une preuve de panne.
-Ce décodeur est utilisé sans I/O. Si plusieurs trames sont disponibles,
-rappelez-le pour obtenir les messages suivants. Les transports des étapes
-suivantes distribueront les messages par abonnement, avec `bind()`.
+Le transport conserve les octets incomplets et appelle la lambda uniquement
+pour un message complet. L'application n'a pas à vérifier les fragments ni à
+interroger la réception. Le composant `core` suffit pour cet exemple.
 
 ### Essayer aussi le format texte
 
@@ -1414,36 +1404,14 @@ natifs et les codecs continuent à utiliser les valeurs XML.
 ### Brancher un autre flux d'octets
 
 Supposons que votre programme possède déjà un flux TCP ou un canal de
-simulation. Deux approches sont possibles :
+simulation. Écrivez une classe dérivée de `Device`, puis confiez-la à
+`PprzTransport`. Le transport prend en charge l'encodage et le décodage ;
+votre application reçoit toujours les messages avec `bind()`.
 
-- injecter les octets dans `PprzFrameDecoder`, comme à l'étape 5, et utiliser
-  `encodePprzFrame()` à l'envoi ;
-- écrire une classe dérivée de `Device`, puis la confier à `PprzTransport`.
-
-La première approche laisse toute la gestion des I/O à votre programme.
-La seconde permet de réutiliser le transport existant. Pour un simple
-bouclage de démonstration, la bibliothèque fournit déjà `MemoryDevice`.
-Ajoutez `<pprzlink/MemoryDevice.h>`, `<pprzlink/PprzTransport.h>` et `<memory>`,
-puis placez dans le bloc `try`, après le remplissage de `altitude` :
-
-```cpp
-boost::asio::io_context context;
-pprzlink::PprzTransport loopback(
-    std::make_unique<pprzlink::MemoryDevice>(context), dictionary);
-loopback.bind("GUIDE_ALTITUDE", [&](const pprzlink::Message &message) {
-    std::cout << "Bouclage : " << message.toString() << '\n';
-    loopback.stop();
-});
-loopback.start();
-loopback.sendMessage(altitude);
-context.run();
-```
-
-Vous retrouvez votre message parce que les écritures en mémoire deviennent
-de l'entrée, annoncée sur le contexte Asio. Il suffit de `pprzlink::core`,
-sans socket ni port série. L'application n'a pas à gérer les fragments :
-la lambda reçoit uniquement un message complet. Pour un simulateur avancé,
-`MemoryDevice::feed()` peut injecter des octets dans le flux.
+Pour une simulation en mémoire, utilisez `MemoryDevice`, comme à
+[l'étape 5](#5-encoder-puis-décoder-sans-matériel). Ses écritures sont bouclées
+en entrée. `MemoryDevice::feed()` permet aussi d'injecter des octets dans le
+flux, sans avoir à écrire un adaptateur.
 
 Un adaptateur réel implémente `getExecutor()`, `startReception()`,
 `stopReception()` et `setReceiveCallback()`. Ses notifications sont appelées
@@ -1473,9 +1441,9 @@ La destruction se fera dans l'ordre inverse.
 | Objet | Ce qu'il conserve | Conséquence pratique |
 | --- | --- | --- |
 | `Message` | Sa propre définition et ses valeurs | Il peut être copié et conservé après la réception. |
-| `PprzFrameDecoder`, transports et `IvyLink` | Une référence au dictionnaire | Le dictionnaire doit rester vivant pendant leur utilisation. |
+| Transports et `IvyLink` | Une référence au dictionnaire | Le dictionnaire doit rester vivant pendant leur utilisation. |
 | `PprzTransport`, `XbeeTransport` | La propriété exclusive du `Device` | Configurez le périphérique avant `std::move`. |
-| Périphérique série et transport UDP | Le contexte Asio fourni | Détruisez-les avant le contexte. |
+| Périphérique série, `MemoryDevice` et transport UDP | Le contexte Asio fourni | Détruisez-les avant le contexte. |
 | Abonnement Ivy | Le callback et ses captures | Gardez l'abonnement actif, et ses données capturées valides. |
 
 Pour les transports binaires, effectuez les appels à un même transport
